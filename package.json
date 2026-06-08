@@ -1,0 +1,27 @@
+{
+  "name": "f2tech-shared",
+  "version": "0.1.0",
+  "description": "Shared cross-project helpers for the F2 Tech web stack — single source of truth for TLD detection and per-TLD URL handling so changes land in one place instead of N repos.",
+  "type": "module",
+  "main": "./src/index.js",
+  "types": "./src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.d.ts",
+      "import": "./src/index.js"
+    },
+    "./tld": {
+      "types": "./src/tld.d.ts",
+      "import": "./src/tld.js"
+    }
+  },
+  "files": [
+    "src/"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/F2Tech-WebDev-v2/f2tech-shared.git"
+  },
+  "license": "UNLICENSED",
+  "private": true
+}
