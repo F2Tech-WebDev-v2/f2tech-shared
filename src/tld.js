@@ -49,28 +49,3 @@ export function expandTld(url) {
   return url.replace(/\{tld\}/g, TLD);
 }
 
-/**
- * Attach a Cognito idToken to a redirect URL using per-TLD delivery:
- *   .f2-tech.ai targets   -> URL fragment (#token=)
- *   anything else (.com,  -> query string (?token=)
- *   .netlify.app, etc.)
- *
- * .ai apps are born clean — fragment delivery means the token does not
- * appear in nginx access logs, Referer headers, or Google's URL index.
- * .com apps continue to use the legacy query-string contract until each
- * scanner's AuthContext is updated to read from window.location.hash.
- */
-export function attachToken(urlString, idToken) {
-  let url;
-  try {
-    url = new URL(urlString);
-  } catch (_e) {
-    return urlString;
-  }
-  if (url.hostname.toLowerCase().endsWith(".f2-tech.ai")) {
-    url.hash = "token=" + encodeURIComponent(idToken);
-  } else {
-    url.searchParams.set("token", idToken);
-  }
-  return url.toString();
-}

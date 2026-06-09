@@ -27,9 +27,3 @@ export declare function svcUrl(
  */
 export declare function expandTld(url: string): string;
 
-/**
- * Attach a Cognito idToken to a redirect URL using per-TLD delivery:
- *   .f2-tech.ai targets   -> URL fragment (#token=)
- *   anything else         -> query string (?token=)
- */
-export declare function attachToken(urlString: string, idToken: string): string;
