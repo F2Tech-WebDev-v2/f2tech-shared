@@ -136,28 +136,50 @@ export async function customerDataTier(host) {
  *   2. customer override (per-customer admin)
  *   3. user entitlement (caller-supplied userLiveAccess boolean)
  *
- * Library stays auth-free: the caller computes userLiveAccess from
- * its own auth flow (typically authService.has_live_data_access(),
- * driven by the /rest/user/data-agreements response).
+ * Library stays auth-free: the caller computes userLiveAccess + isAdmin
+ * from its own auth flow (typically authService.has_live_data_access()
+ * and authService.is_admin()).
+ *
+ * Returns three fields:
+ *   tier        — the EFFECTIVE data tier the user gets. Use for data
+ *                 feed routing (live vs delayed WebSocket etc.).
+ *   source      — which layer decided the tier (company | customer | user).
+ *   bannerMode  — what mode to RENDER in the override banner, or null
+ *                 when no banner should show. The standard SPA pattern:
+ *                 <div *ngIf="bannerMode">...</div> and the library
+ *                 decides when to surface it. Rules:
+ *                   - source === 'user' → null (no override active)
+ *                   - source !== 'user' AND tier === 'realtime' AND
+ *                     !isAdmin → null (don't advertise the realtime
+ *                     override to end users — admin-side toggle only)
+ *                   - otherwise → same as tier (show delayed/disabled
+ *                     banners to all users since they're user-relevant
+ *                     warnings; show realtime banner only to admins)
  *
  * @param {object} opts
  * @param {boolean} [opts.userLiveAccess] - Caller's resolved user-entitlement boolean.
+ * @param {boolean} [opts.isAdmin] - Caller's admin-role boolean. Defaults false.
  * @param {string} [opts.host] - Hostname; defaults to window.location.host.
- * @returns {Promise<{tier: 'realtime' | 'delayed' | 'disabled', source: 'company' | 'customer' | 'user'}>}
+ * @returns {Promise<{tier: 'realtime' | 'delayed' | 'disabled', source: 'company' | 'customer' | 'user', bannerMode: 'realtime' | 'delayed' | 'disabled' | null}>}
  */
 export async function resolveDataTier(opts) {
   const host = opts && opts.host;
   const userLiveAccess = !!(opts && opts.userLiveAccess);
+  const isAdmin = !!(opts && opts.isAdmin);
   const body = await _getBrand(host);
   const companyMode = (() => {
     const m = (body?.brand?.company_override ?? body?.company_override)?.mode;
     return (m === "delayed" || m === "realtime" || m === "disabled") ? m : null;
   })();
-  if (companyMode) return { tier: companyMode, source: "company" };
   const customerMode = (() => {
     const m = (body?.brand?.customer_override ?? body?.customer_override)?.mode;
     return (m === "delayed" || m === "realtime" || m === "disabled") ? m : null;
   })();
-  if (customerMode) return { tier: customerMode, source: "customer" };
-  return { tier: userLiveAccess ? "realtime" : "delayed", source: "user" };
+  let tier, source;
+  if (companyMode) { tier = companyMode; source = "company"; }
+  else if (customerMode) { tier = customerMode; source = "customer"; }
+  else { tier = userLiveAccess ? "realtime" : "delayed"; source = "user"; }
+  // Banner display rule — see jsdoc above.
+  const bannerMode = (source !== "user" && !(tier === "realtime" && !isAdmin)) ? tier : null;
+  return { tier, source, bannerMode };
 }

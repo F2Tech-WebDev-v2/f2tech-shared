@@ -48,13 +48,27 @@ export function customerDataTier(host?: string): Promise<DataTierMode | null>;
 export type DataTierSource = 'company' | 'customer' | 'user';
 
 export interface ResolvedDataTier {
+  /** Effective data tier the user gets (use for feed routing). */
   tier: DataTierMode;
+  /** Which layer decided the tier. */
   source: DataTierSource;
+  /**
+   * Mode to render in the override banner, or null when no banner
+   * should show. Null when source==='user', and null when tier==='realtime'
+   * + source!=='user' + !isAdmin (don't advertise realtime override to
+   * non-admin users). Otherwise same as `tier`.
+   */
+  bannerMode: DataTierMode | null;
 }
 
 /**
  * Single entry-point for SPAs to determine the user's effective data tier.
  * Applies the 3-layer rule (company > customer > user). Library is
- * auth-free; caller passes userLiveAccess from its own auth state.
+ * auth-free; caller passes userLiveAccess + isAdmin from its own auth state.
+ *
+ * Standard SPA banner pattern: bind `*ngIf="r.bannerMode"` and let the
+ * library decide whether to surface the banner. Realtime overrides are
+ * admin-only by default (the realtime mode is an admin-side toggle and
+ * shouldn't be advertised to customers who may be on delayed entitlements).
  */
-export function resolveDataTier(opts: { userLiveAccess?: boolean; host?: string }): Promise<ResolvedDataTier>;
+export function resolveDataTier(opts: { userLiveAccess?: boolean; isAdmin?: boolean; host?: string }): Promise<ResolvedDataTier>;
