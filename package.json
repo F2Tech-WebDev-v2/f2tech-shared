@@ -1,6 +1,6 @@
 {
   "name": "f2tech-shared",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "description": "Shared cross-project helpers for the F2 Tech web stack — single source of truth for TLD detection and per-TLD URL handling so changes land in one place instead of N repos.",
   "type": "module",
   "main": "./src/index.js",
@@ -17,6 +17,10 @@
     "./agreements": {
       "types": "./src/agreements.d.ts",
       "import": "./src/agreements.js"
+    },
+    "./country-flags": {
+      "types": "./src/country-flags.d.ts",
+      "import": "./src/country-flags.js"
     }
   },
   "files": [
