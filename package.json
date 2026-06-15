@@ -1,7 +1,7 @@
 {
   "name": "f2tech-shared",
-  "version": "0.8.0",
-  "description": "Shared cross-project helpers for the F2 Tech web stack — single source of truth for TLD detection and per-TLD URL handling so changes land in one place instead of N repos.",
+  "version": "0.9.0",
+  "description": "Shared cross-project helpers for the F2 Tech web stack — single source of truth for TLD detection, per-TLD URL handling, opaque-sid SSO handoff, and per-customer agreements / data-tier flags so changes land in one place instead of N repos.",
   "type": "module",
   "main": "./src/index.js",
   "types": "./src/index.d.ts",
@@ -21,6 +21,10 @@
     "./country-flags": {
       "types": "./src/country-flags.d.ts",
       "import": "./src/country-flags.js"
+    },
+    "./sid-handoff": {
+      "types": "./src/sid-handoff.d.ts",
+      "import": "./src/sid-handoff.js"
     }
   },
   "files": [
