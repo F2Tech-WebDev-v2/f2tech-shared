@@ -97,10 +97,8 @@ export async function agreementsConfig(host) {
 
 /**
  * Read the company-wide data-tier override mode from the brand-config
- * endpoint. When set, every consumer SPA should render the corresponding
- * data tier (banner / state). The agreements popup is already suppressed
- * server-side via agreementsConfig() — this helper just surfaces the mode
- * for UI rendering.
+ * endpoint (set by F2 admin on the 'f2' Customer doc). Highest-priority
+ * layer — overrides per-customer + per-user.
  *
  * @param {string} [host] - Hostname to look up. Defaults to window.location.host.
  * @returns {Promise<'delayed' | 'realtime' | 'disabled' | null>}
@@ -111,4 +109,55 @@ export async function dataTierOverride(host) {
   const co = body?.brand?.company_override ?? body?.company_override;
   const m = co?.mode;
   return (m === "delayed" || m === "realtime" || m === "disabled") ? m : null;
+}
+
+/**
+ * Read the per-customer data-tier override mode from the brand-config
+ * endpoint (set by F2 admin on the customer's Customer doc — e.g. forcing
+ * 'delayed' for all of MTA's users). Middle-priority layer — overridden
+ * by company-wide, overrides per-user entitlement.
+ *
+ * @param {string} [host] - Hostname to look up. Defaults to window.location.host.
+ * @returns {Promise<'delayed' | 'realtime' | 'disabled' | null>}
+ */
+export async function customerDataTier(host) {
+  const body = await _getBrand(host);
+  if (!body) return null;
+  const co = body?.brand?.customer_override ?? body?.customer_override;
+  const m = co?.mode;
+  return (m === "delayed" || m === "realtime" || m === "disabled") ? m : null;
+}
+
+/**
+ * Single entry-point each scanner SPA uses to determine the user's
+ * effective data tier. Applies the 3-layer rule:
+ *
+ *   1. company override (F2 admin)   — highest priority
+ *   2. customer override (per-customer admin)
+ *   3. user entitlement (caller-supplied userLiveAccess boolean)
+ *
+ * Library stays auth-free: the caller computes userLiveAccess from
+ * its own auth flow (typically authService.has_live_data_access(),
+ * driven by the /rest/user/data-agreements response).
+ *
+ * @param {object} opts
+ * @param {boolean} [opts.userLiveAccess] - Caller's resolved user-entitlement boolean.
+ * @param {string} [opts.host] - Hostname; defaults to window.location.host.
+ * @returns {Promise<{tier: 'realtime' | 'delayed' | 'disabled', source: 'company' | 'customer' | 'user'}>}
+ */
+export async function resolveDataTier(opts) {
+  const host = opts && opts.host;
+  const userLiveAccess = !!(opts && opts.userLiveAccess);
+  const body = await _getBrand(host);
+  const companyMode = (() => {
+    const m = (body?.brand?.company_override ?? body?.company_override)?.mode;
+    return (m === "delayed" || m === "realtime" || m === "disabled") ? m : null;
+  })();
+  if (companyMode) return { tier: companyMode, source: "company" };
+  const customerMode = (() => {
+    const m = (body?.brand?.customer_override ?? body?.customer_override)?.mode;
+    return (m === "delayed" || m === "realtime" || m === "disabled") ? m : null;
+  })();
+  if (customerMode) return { tier: customerMode, source: "customer" };
+  return { tier: userLiveAccess ? "realtime" : "delayed", source: "user" };
 }

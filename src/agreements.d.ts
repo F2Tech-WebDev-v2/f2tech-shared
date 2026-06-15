@@ -36,3 +36,25 @@ export type DataTierMode = 'delayed' | 'realtime' | 'disabled';
  * @param host Hostname to look up. Defaults to window.location.host.
  */
 export function dataTierOverride(host?: string): Promise<DataTierMode | null>;
+
+/**
+ * Per-customer data-tier override mode (set by F2 admin on the customer's
+ * own Customer doc). Middle-priority layer.
+ *
+ * @param host Hostname to look up. Defaults to window.location.host.
+ */
+export function customerDataTier(host?: string): Promise<DataTierMode | null>;
+
+export type DataTierSource = 'company' | 'customer' | 'user';
+
+export interface ResolvedDataTier {
+  tier: DataTierMode;
+  source: DataTierSource;
+}
+
+/**
+ * Single entry-point for SPAs to determine the user's effective data tier.
+ * Applies the 3-layer rule (company > customer > user). Library is
+ * auth-free; caller passes userLiveAccess from its own auth state.
+ */
+export function resolveDataTier(opts: { userLiveAccess?: boolean; host?: string }): Promise<ResolvedDataTier>;
