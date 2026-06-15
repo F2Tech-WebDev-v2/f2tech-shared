@@ -42,3 +42,47 @@ export function exchAgreementsUrl(customerSlug, idToken) {
   const token = encodeURIComponent(String(idToken || ""));
   return "https://" + ADMIN_HOST + "/data-agreements?customer=" + slug + "#token=" + token;
 }
+
+// Per-customer agreements gating, sourced from F2-ADMIN.Customers.exchange_agreements.
+// Consumers wrap their existing get_exchange_agreements() flow with this:
+//   const cfg = await agreementsConfig();
+//   if (!cfg.enforced) { /* skip popup + don't gate scanner */ return; }
+// Fail-safe default ({enforced: true, required: true}) if the backend is
+// unreachable or the Customer doc lacks the field — preserves the historical
+// default of "agreements gate is on" rather than silently disabling it.
+//
+// Cross-origin: relies on @koa/cors being wide-open on f2-admin-service2
+// (current state). If CORS is ever tightened to an allowlist (see memory
+// feedback_cors_before_samesite_none.md), /rest/api/brand-config MUST stay
+// reachable from every customer SPA origin or this gate breaks.
+
+const BRAND_CONFIG_ORIGIN = "https://f2-admin-service2.f2-tech.ai";
+const CACHE_TTL_MS = 60 * 1000;
+const _configCache = new Map();
+
+/**
+ * Read the per-customer exchange-agreements config from the brand-config
+ * endpoint (host-keyed; backend resolves to a Customer row via domains[]).
+ *
+ * @param {string} [host] - Hostname to look up. Defaults to window.location.host.
+ * @returns {Promise<{enforced: boolean, required: boolean}>}
+ */
+export async function agreementsConfig(host) {
+  const h = String(host || (typeof window !== "undefined" ? window.location.host : "")).trim().toLowerCase();
+  const cached = _configCache.get(h);
+  if (cached && (Date.now() - cached.at) < CACHE_TTL_MS) return cached.cfg;
+  try {
+    const res = await fetch(BRAND_CONFIG_ORIGIN + "/rest/api/brand-config?host=" + encodeURIComponent(h));
+    if (!res.ok) throw new Error("brand-config " + res.status);
+    const body = await res.json();
+    const ea = body?.brand?.exchange_agreements ?? body?.exchange_agreements;
+    const cfg = {
+      enforced: ea?.enforced ?? true,
+      required: ea?.required ?? true,
+    };
+    _configCache.set(h, { at: Date.now(), cfg });
+    return cfg;
+  } catch {
+    return { enforced: true, required: true };
+  }
+}

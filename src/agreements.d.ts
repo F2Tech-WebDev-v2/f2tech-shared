@@ -9,3 +9,18 @@
  * @returns The fully-qualified iframe URL.
  */
 export function exchAgreementsUrl(customerSlug: string, idToken: string): string;
+
+export interface AgreementsConfig {
+  enforced: boolean;
+  required: boolean;
+}
+
+/**
+ * Per-customer agreements gating, sourced from
+ * F2-ADMIN.Customers.exchange_agreements via /rest/api/brand-config.
+ * Fail-safe default {enforced:true, required:true} on network/parse error.
+ * Cached in-module per host for 60 seconds.
+ *
+ * @param host Hostname to look up. Defaults to window.location.host.
+ */
+export function agreementsConfig(host?: string): Promise<AgreementsConfig>;
