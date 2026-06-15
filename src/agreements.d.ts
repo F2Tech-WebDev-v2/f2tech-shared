@@ -24,3 +24,15 @@ export interface AgreementsConfig {
  * @param host Hostname to look up. Defaults to window.location.host.
  */
 export function agreementsConfig(host?: string): Promise<AgreementsConfig>;
+
+export type DataTierMode = 'delayed' | 'realtime' | 'disabled';
+
+/**
+ * Read the company-wide data-tier override mode from /rest/api/brand-config.
+ * Returns null when no override is active (per-customer settings apply).
+ * Consumer SPAs use this to render a banner / state indicator.
+ * Cached in-module per host for 60 seconds (shared cache with agreementsConfig).
+ *
+ * @param host Hostname to look up. Defaults to window.location.host.
+ */
+export function dataTierOverride(host?: string): Promise<DataTierMode | null>;

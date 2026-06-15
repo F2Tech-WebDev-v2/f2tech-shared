@@ -58,7 +58,25 @@ export function exchAgreementsUrl(customerSlug, idToken) {
 
 const BRAND_CONFIG_ORIGIN = "https://f2-admin-service2.f2-tech.ai";
 const CACHE_TTL_MS = 60 * 1000;
-const _configCache = new Map();
+const _brandCache = new Map();
+
+// Single shared fetch of /rest/api/brand-config per host (60s TTL).
+// Both agreementsConfig() and dataTierOverride() consume from this so a
+// scanner SPA does one cross-origin request per minute, not two.
+async function _getBrand(host) {
+  const h = String(host || (typeof window !== "undefined" ? window.location.host : "")).trim().toLowerCase();
+  const cached = _brandCache.get(h);
+  if (cached && (Date.now() - cached.at) < CACHE_TTL_MS) return cached.body;
+  try {
+    const res = await fetch(BRAND_CONFIG_ORIGIN + "/rest/api/brand-config?host=" + encodeURIComponent(h));
+    if (!res.ok) throw new Error("brand-config " + res.status);
+    const body = await res.json();
+    _brandCache.set(h, { at: Date.now(), body });
+    return body;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Read the per-customer exchange-agreements config from the brand-config
@@ -68,21 +86,29 @@ const _configCache = new Map();
  * @returns {Promise<{enforced: boolean, required: boolean}>}
  */
 export async function agreementsConfig(host) {
-  const h = String(host || (typeof window !== "undefined" ? window.location.host : "")).trim().toLowerCase();
-  const cached = _configCache.get(h);
-  if (cached && (Date.now() - cached.at) < CACHE_TTL_MS) return cached.cfg;
-  try {
-    const res = await fetch(BRAND_CONFIG_ORIGIN + "/rest/api/brand-config?host=" + encodeURIComponent(h));
-    if (!res.ok) throw new Error("brand-config " + res.status);
-    const body = await res.json();
-    const ea = body?.brand?.exchange_agreements ?? body?.exchange_agreements;
-    const cfg = {
-      enforced: ea?.enforced ?? true,
-      required: ea?.required ?? true,
-    };
-    _configCache.set(h, { at: Date.now(), cfg });
-    return cfg;
-  } catch {
-    return { enforced: true, required: true };
-  }
+  const body = await _getBrand(host);
+  if (!body) return { enforced: true, required: true };
+  const ea = body?.brand?.exchange_agreements ?? body?.exchange_agreements;
+  return {
+    enforced: ea?.enforced ?? true,
+    required: ea?.required ?? true,
+  };
+}
+
+/**
+ * Read the company-wide data-tier override mode from the brand-config
+ * endpoint. When set, every consumer SPA should render the corresponding
+ * data tier (banner / state). The agreements popup is already suppressed
+ * server-side via agreementsConfig() — this helper just surfaces the mode
+ * for UI rendering.
+ *
+ * @param {string} [host] - Hostname to look up. Defaults to window.location.host.
+ * @returns {Promise<'delayed' | 'realtime' | 'disabled' | null>}
+ */
+export async function dataTierOverride(host) {
+  const body = await _getBrand(host);
+  if (!body) return null;
+  const co = body?.brand?.company_override ?? body?.company_override;
+  const m = co?.mode;
+  return (m === "delayed" || m === "realtime" || m === "disabled") ? m : null;
 }
