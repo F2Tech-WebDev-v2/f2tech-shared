@@ -165,6 +165,7 @@ export async function resolveDataTier(opts) {
   const host = opts && opts.host;
   const userLiveAccess = !!(opts && opts.userLiveAccess);
   const isAdmin = !!(opts && opts.isAdmin);
+  const isClient = !!(opts && opts.isClient);
   const body = await _getBrand(host);
   const companyMode = (() => {
     const m = (body?.brand?.company_override ?? body?.company_override)?.mode;
@@ -178,9 +179,16 @@ export async function resolveDataTier(opts) {
   if (companyMode) { tier = companyMode; source = "company"; }
   else if (customerMode) { tier = customerMode; source = "customer"; }
   else { tier = userLiveAccess ? "realtime" : "delayed"; source = "user"; }
-  // Banner display rule — see jsdoc above. ANY active override surfaces
-  // to all users; the realtime banner text explicitly says "all users".
-  void isAdmin; // retained in the signature for future per-role banners
-  const bannerMode = (source !== "user") ? tier : null;
+  // Banner display rule: ONLY admin / client roles see the override
+  // banner. The banner is operator awareness ("an override is in
+  // effect" -- so admin/client knows why their data feed isn't what
+  // their seat-level entitlement would normally give them). Members
+  // get the override tier silently. The old "show to all users" copy
+  // was honest but operationally noisy -- a member with a realtime
+  // company override just gets realtime, they don't need a banner
+  // about it. Surfaced by Mike across theo-trade + alpha-shark
+  // 2026-06-16.
+  const bannerMode =
+    source !== "user" && (isAdmin || isClient) ? tier : null;
   return { tier, source, bannerMode };
 }

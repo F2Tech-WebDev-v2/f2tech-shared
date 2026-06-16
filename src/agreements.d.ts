@@ -71,4 +71,4 @@ export interface ResolvedDataTier {
  * admin-only by default (the realtime mode is an admin-side toggle and
  * shouldn't be advertised to customers who may be on delayed entitlements).
  */
-export function resolveDataTier(opts: { userLiveAccess?: boolean; isAdmin?: boolean; host?: string }): Promise<ResolvedDataTier>;
+export function resolveDataTier(opts: { userLiveAccess?: boolean; isAdmin?: boolean; isClient?: boolean; host?: string }): Promise<ResolvedDataTier>;
