@@ -1,7 +1,7 @@
 {
   "name": "f2tech-shared",
-  "version": "0.11.0",
-  "description": "Shared cross-project helpers for the F2 Tech web stack — single source of truth for TLD detection, per-TLD URL handling, opaque-sid SSO handoff, and per-customer agreements / data-tier flags so changes land in one place instead of N repos.",
+  "version": "0.12.0",
+  "description": "Shared cross-project helpers for the F2 Tech web stack — single source of truth for TLD detection, per-TLD URL handling, opaque-sid SSO handoff, per-customer agreements / data-tier flags, and canonical UI components (data-tier banner, exchange-agreements popup/banner) so changes land in one place instead of N repos.",
   "type": "module",
   "main": "./src/index.js",
   "types": "./src/index.d.ts",
@@ -33,11 +33,26 @@
     "./support-toast": {
       "types": "./src/support-toast.d.ts",
       "import": "./src/support-toast.js"
-    }
+    },
+    "./data-tier-banner.component": "./src/data-tier-banner.component.ts",
+    "./exchange-agreements-popup.component": "./src/exchange-agreements-popup.component.ts",
+    "./exchange-agreements-banner.component": "./src/exchange-agreements-banner.component.ts",
+    "./data-tier-banner": "./src/data-tier-banner.tsx",
+    "./exchange-agreements-popup": "./src/exchange-agreements-popup.tsx"
   },
   "files": [
     "src/"
   ],
+  "peerDependencies": {
+    "@angular/common": ">=19.0.0",
+    "@angular/core": ">=19.0.0",
+    "react": ">=18.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@angular/common": { "optional": true },
+    "@angular/core": { "optional": true },
+    "react": { "optional": true }
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/F2Tech-WebDev-v2/f2tech-shared.git"
