@@ -1,4 +1,5 @@
-import React from 'react';
+// React JSX runtime — no default React import needed (and trips
+// noUnusedLocals in strict-mode consumer SPAs).
 
 /**
  * React Exchange Agreements popup — visual twin of f2-exchange-agreements-popup
