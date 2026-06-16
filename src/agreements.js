@@ -148,13 +148,12 @@ export async function customerDataTier(host) {
  *                 when no banner should show. The standard SPA pattern:
  *                 <div *ngIf="bannerMode">...</div> and the library
  *                 decides when to surface it. Rules:
- *                   - source === 'user' → null (no override active)
- *                   - source !== 'user' AND tier === 'realtime' AND
- *                     !isAdmin → null (don't advertise the realtime
- *                     override to end users — admin-side toggle only)
- *                   - otherwise → same as tier (show delayed/disabled
- *                     banners to all users since they're user-relevant
- *                     warnings; show realtime banner only to admins)
+ *                   - source === 'user' → null (no override active, no
+ *                     banner needed)
+ *                   - source !== 'user' → same as tier (show to ALL
+ *                     users when an admin override is active — the
+ *                     realtime banner literally says "all users serving
+ *                     live data", so it must be visible to all users)
  *
  * @param {object} opts
  * @param {boolean} [opts.userLiveAccess] - Caller's resolved user-entitlement boolean.
@@ -179,7 +178,9 @@ export async function resolveDataTier(opts) {
   if (companyMode) { tier = companyMode; source = "company"; }
   else if (customerMode) { tier = customerMode; source = "customer"; }
   else { tier = userLiveAccess ? "realtime" : "delayed"; source = "user"; }
-  // Banner display rule — see jsdoc above.
-  const bannerMode = (source !== "user" && !(tier === "realtime" && !isAdmin)) ? tier : null;
+  // Banner display rule — see jsdoc above. ANY active override surfaces
+  // to all users; the realtime banner text explicitly says "all users".
+  void isAdmin; // retained in the signature for future per-role banners
+  const bannerMode = (source !== "user") ? tier : null;
   return { tier, source, bannerMode };
 }
