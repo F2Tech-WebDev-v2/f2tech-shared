@@ -23,19 +23,20 @@ const STYLES: Record<Exclude<Mode, null>, { bg: string; text: string }> = {
 
 export interface DataTierBannerProps {
   isAdmin: boolean;
+  isClient?: boolean;
   userLiveAccess?: boolean;
 }
 
-export function DataTierBanner({ isAdmin, userLiveAccess = false }: DataTierBannerProps) {
+export function DataTierBanner({ isAdmin, isClient = false, userLiveAccess = false }: DataTierBannerProps) {
   const [mode, setMode] = useState<Mode>(null);
 
   useEffect(() => {
     let cancelled = false;
-    resolveDataTier({ userLiveAccess, isAdmin })
+    resolveDataTier({ userLiveAccess, isAdmin, isClient })
       .then((r: any) => { if (!cancelled) setMode((r?.bannerMode as Mode) ?? null); })
       .catch(() => { if (!cancelled) setMode(null); });
     return () => { cancelled = true; };
-  }, [isAdmin, userLiveAccess]);
+  }, [isAdmin, isClient, userLiveAccess]);
 
   if (!mode) return null;
   const cfg = STYLES[mode];
