@@ -1,7 +1,7 @@
 {
   "name": "f2tech-shared",
-  "version": "0.14.0",
-  "description": "Shared cross-project helpers for the F2 Tech web stack — single source of truth for TLD detection, per-TLD URL handling, opaque-sid SSO handoff, per-customer agreements / data-tier flags, and canonical UI components (data-tier banner, exchange-agreements popup/banner) so changes land in one place instead of N repos.",
+  "version": "0.15.0",
+  "description": "Shared cross-project helpers for the F2 Tech web stack — single source of truth for TLD detection, per-TLD URL handling, opaque-sid SSO handoff, per-customer agreements / data-tier flags, and canonical UI components (data-tier banner, exchange-agreements popup/banner, account-menu coin) so changes land in one place instead of N repos.",
   "type": "module",
   "main": "./src/index.js",
   "types": "./src/index.d.ts",
@@ -38,7 +38,9 @@
     "./exchange-agreements-popup.component": "./src/exchange-agreements-popup.component.ts",
     "./exchange-agreements-banner.component": "./src/exchange-agreements-banner.component.ts",
     "./data-tier-banner": "./src/data-tier-banner.tsx",
-    "./exchange-agreements-popup": "./src/exchange-agreements-popup.tsx"
+    "./exchange-agreements-popup": "./src/exchange-agreements-popup.tsx",
+    "./account-menu.component": "./src/account-menu.component.ts",
+    "./account-menu": "./src/account-menu.tsx"
   },
   "files": [
     "src/"
