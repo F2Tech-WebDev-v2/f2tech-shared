@@ -34,13 +34,34 @@
       "types": "./src/support-toast.d.ts",
       "import": "./src/support-toast.js"
     },
-    "./data-tier-banner.component": "./src/data-tier-banner.component.ts",
-    "./exchange-agreements-popup.component": "./src/exchange-agreements-popup.component.ts",
-    "./exchange-agreements-banner.component": "./src/exchange-agreements-banner.component.ts",
-    "./data-tier-banner": "./src/data-tier-banner.tsx",
-    "./exchange-agreements-popup": "./src/exchange-agreements-popup.tsx",
-    "./account-menu.component": "./src/account-menu.component.ts",
-    "./account-menu": "./src/account-menu.tsx"
+    "./data-tier-banner.component": {
+      "types": "./src/data-tier-banner.component.ts",
+      "default": "./src/data-tier-banner.component.ts"
+    },
+    "./exchange-agreements-popup.component": {
+      "types": "./src/exchange-agreements-popup.component.ts",
+      "default": "./src/exchange-agreements-popup.component.ts"
+    },
+    "./exchange-agreements-banner.component": {
+      "types": "./src/exchange-agreements-banner.component.ts",
+      "default": "./src/exchange-agreements-banner.component.ts"
+    },
+    "./data-tier-banner": {
+      "types": "./src/data-tier-banner.tsx",
+      "default": "./src/data-tier-banner.tsx"
+    },
+    "./exchange-agreements-popup": {
+      "types": "./src/exchange-agreements-popup.tsx",
+      "default": "./src/exchange-agreements-popup.tsx"
+    },
+    "./account-menu.component": {
+      "types": "./src/account-menu.component.ts",
+      "default": "./src/account-menu.component.ts"
+    },
+    "./account-menu": {
+      "types": "./src/account-menu.tsx",
+      "default": "./src/account-menu.tsx"
+    }
   },
   "files": [
     "src/"
