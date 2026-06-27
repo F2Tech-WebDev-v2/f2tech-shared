@@ -9,27 +9,20 @@ import { CommonModule } from '@angular/common';
  * for the coin shape, dropdown layout, and item ordering.
  *
  * Behavior contract (matches React twin in account-menu.tsx):
- *   - HOVER (mouseenter / focus) → coin expands to reveal the email
- *     in a pill on its left. The pill collapses on mouseleave/blur
- *     unless the dropdown is open.
+ *   - HOVER (mouseenter / focus) → coin expands to reveal an identity
+ *     pill on its left. When firstName/lastName are present the pill
+ *     shows "First Last" on top with the email as a smaller subtext;
+ *     otherwise the pill collapses to just the email. The pill collapses
+ *     on mouseleave/blur unless the dropdown is open.
  *   - CLICK → dropdown with Exchange Agreements / Change password /
  *     Sign out items.
  *
- * Wiring:
- *   - `agreementUrl`      - per-customer iframe URL from
- *                           f2tech-shared/agreements#exchAgreementsUrl().
- *                           Hides the Exchange Agreements row when null.
- *   - `email`             - signed-in user email. Surfaced via the
- *                           hover-pill; also used as the coin's
- *                           accessible label.
- *   - `(signOut)`         - fires on Sign out click.
- *   - `(changePassword)`  - fires on Change password click; consumer
- *                           handles routing (e.g. router.navigate to
- *                           `/change-pwd`) or opens a modal.
- *
- * Self-contained: no Flowbite dep, no FontAwesome dep, no Tailwind.
- * Inline SVG user-circle so the coin renders identically in every SPA
- * regardless of consumer config.
+ * Why two-line identity: the underlying Cognito bundle sometimes lands
+ * with the Username (sub UUID) where the email should be — surfacing
+ * "64686498-4081-70da-7dab-..." as the only label is unreadable. Even
+ * when the email is correct, the human-readable name is the better
+ * primary label. Falling back to email-only keeps the pill useful when
+ * the consumer hasn't wired identity through yet.
  */
 @Component({
   standalone: true,
@@ -43,16 +36,19 @@ import { CommonModule } from '@angular/common';
       (mouseleave)="hover = false"
     >
       <span
-        *ngIf="email"
+        *ngIf="hasIdentity"
         [attr.aria-hidden]="!expanded"
-        [style.max-width.px]="expanded ? 280 : 0"
+        [style.max-width.px]="expanded ? 320 : 0"
         [style.opacity]="expanded ? 1 : 0"
         [style.padding-left.px]="expanded ? 12 : 0"
         [style.padding-right.px]="expanded ? 12 : 0"
         [style.margin-right.px]="expanded ? 8 : 0"
         [style.pointer-events]="expanded ? 'auto' : 'none'"
-        style="padding-top:6px;padding-bottom:6px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;background:white;color:#11314D;font-size:13px;font-weight:500;line-height:1.1;border-radius:9999px;transition:max-width 200ms ease,opacity 150ms ease,padding 200ms ease,margin 200ms ease"
-      >{{ email }}</span>
+        style="padding-top:6px;padding-bottom:6px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;background:white;color:#11314D;line-height:1.1;border-radius:9999px;transition:max-width 200ms ease,opacity 150ms ease,padding 200ms ease,margin 200ms ease;display:inline-flex;flex-direction:column;align-items:flex-end"
+      >
+        <span *ngIf="displayName" style="font-size:13px;font-weight:600">{{ displayName }}</span>
+        <span *ngIf="email" [style.font-size.px]="displayName ? 11 : 13" [style.font-weight]="displayName ? 400 : 500" [style.opacity]="displayName ? 0.7 : 1">{{ email }}</span>
+      </span>
       <button
         type="button"
         (click)="toggle($event)"
@@ -60,8 +56,8 @@ import { CommonModule } from '@angular/common';
         (blur)="focus = false"
         [attr.aria-expanded]="open"
         aria-haspopup="true"
-        [attr.aria-label]="email ? 'Open account menu for ' + email : 'Open account menu'"
-        [attr.title]="email || null"
+        [attr.aria-label]="ariaLabel"
+        [attr.title]="displayName || email || null"
         style="display:flex;align-items:center;justify-content:center;width:32px;height:32px;border-radius:9999px;background:white;border:0;padding:0;cursor:pointer"
       >
         <svg width="22" height="22" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
@@ -74,8 +70,15 @@ import { CommonModule } from '@angular/common';
       <div
         *ngIf="open"
         role="menu"
-        style="position:absolute;top:calc(100% + 8px);right:0;z-index:9999;min-width:220px;background:#0E1019;border:1px solid rgba(255,255,255,0.08);border-radius:4px;box-shadow:0 6px 16px rgba(0,0,0,0.4);overflow:hidden"
+        style="position:absolute;top:calc(100% + 8px);right:0;z-index:9999;min-width:240px;background:#0E1019;border:1px solid rgba(255,255,255,0.08);border-radius:4px;box-shadow:0 6px 16px rgba(0,0,0,0.4);overflow:hidden"
       >
+        <div
+          *ngIf="displayName || email"
+          style="padding:10px 16px;border-bottom:1px solid rgba(255,255,255,0.08);background:rgba(255,255,255,0.03)"
+        >
+          <div *ngIf="displayName" style="font-size:13px;font-weight:600;color:#f3f4f6;line-height:1.2">{{ displayName }}</div>
+          <div *ngIf="email" [style.font-size.px]="displayName ? 11 : 13" [style.color]="displayName ? '#9ca3af' : '#e5e7eb'" [style.margin-top.px]="displayName ? 2 : 0" style="line-height:1.2;word-break:break-all">{{ email }}</div>
+        </div>
         <a
           *ngIf="agreementUrl"
           [href]="agreementUrl"
@@ -110,6 +113,8 @@ import { CommonModule } from '@angular/common';
 export class AccountMenuComponent {
   @Input() agreementUrl: string | null = null;
   @Input() email: string | null = null;
+  @Input() firstName: string | null = null;
+  @Input() lastName: string | null = null;
   @Output() signOut = new EventEmitter<void>();
   @Output() changePassword = new EventEmitter<void>();
 
@@ -119,8 +124,24 @@ export class AccountMenuComponent {
 
   constructor(private host: ElementRef<HTMLElement>) {}
 
+  get displayName(): string {
+    const f = (this.firstName || '').trim();
+    const l = (this.lastName || '').trim();
+    const combined = [f, l].filter(Boolean).join(' ');
+    return combined || '';
+  }
+
+  get hasIdentity(): boolean {
+    return !!(this.email || this.displayName);
+  }
+
   get expanded(): boolean {
-    return !!(this.email && (this.hover || this.focus || this.open));
+    return !!(this.hasIdentity && (this.hover || this.focus || this.open));
+  }
+
+  get ariaLabel(): string {
+    const label = this.displayName || this.email;
+    return label ? `Open account menu for ${label}` : 'Open account menu';
   }
 
   toggle(ev: MouseEvent) {

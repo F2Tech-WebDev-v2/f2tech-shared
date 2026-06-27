@@ -2,14 +2,16 @@ import { useEffect, useRef, useState } from 'react';
 
 /**
  * React twin of f2-account-menu (Angular). Top-right "account coin" —
- * compact circular avatar that EXPANDS ON HOVER to reveal the
- * signed-in email next to the coin, and OPENS ON CLICK into a dropdown
- * carrying Exchange Agreements / Change password / Sign out.
+ * compact circular avatar that EXPANDS ON HOVER to reveal an identity
+ * pill next to the coin (First Last on top, email as smaller subtext),
+ * and OPENS ON CLICK into a dropdown carrying Exchange Agreements /
+ * Change password / Sign out.
  *
- * Hover-to-reveal is the canonical contract: the email is always
- * surfaced one mouse move away without spending header real estate on
- * a permanent label. Focus also expands so keyboard users get the
- * same affordance.
+ * Hover-to-reveal is the canonical contract: identity is always one
+ * mouse move away without spending header real estate on a permanent
+ * label. Focus also expands so keyboard users get the same affordance.
+ *
+ * When firstName/lastName are absent the pill falls back to email-only.
  *
  * Self-contained — no external icon or dropdown library.
  */
@@ -17,11 +19,13 @@ import { useEffect, useRef, useState } from 'react';
 export interface AccountMenuProps {
   agreementUrl?: string | null;
   email?: string | null;
+  firstName?: string | null;
+  lastName?: string | null;
   onSignOut: () => void;
   onChangePassword: () => void;
 }
 
-export function AccountMenu({ agreementUrl, email, onSignOut, onChangePassword }: AccountMenuProps) {
+export function AccountMenu({ agreementUrl, email, firstName, lastName, onSignOut, onChangePassword }: AccountMenuProps) {
   const [hover, setHover] = useState(false);
   const [focus, setFocus] = useState(false);
   const [open, setOpen] = useState(false);
@@ -43,10 +47,13 @@ export function AccountMenu({ agreementUrl, email, onSignOut, onChangePassword }
     };
   }, [open]);
 
+  const displayName = [firstName || '', lastName || ''].map(s => s.trim()).filter(Boolean).join(' ');
+  const hasIdentity = !!(email || displayName);
+
   // Pill is visible while the user is hovering, focused, OR has the
-  // menu open. Keeping it open during the dropdown means the email
+  // menu open. Keeping it open during the dropdown means the identity
   // header inside the menu can be dropped without losing context.
-  const expanded = !!(email && (hover || focus || open));
+  const expanded = hasIdentity && (hover || focus || open);
 
   const itemBase = {
     display: 'block' as const,
@@ -67,11 +74,11 @@ export function AccountMenu({ agreementUrl, email, onSignOut, onChangePassword }
       style={{ position: 'relative', display: 'inline-flex', alignItems: 'center' }}
       data-f2-account-menu
     >
-      {email && (
+      {hasIdentity && (
         <span
           aria-hidden={!expanded}
           style={{
-            maxWidth: expanded ? 280 : 0,
+            maxWidth: expanded ? 320 : 0,
             opacity: expanded ? 1 : 0,
             paddingLeft: expanded ? 12 : 0,
             paddingRight: expanded ? 12 : 0,
@@ -83,15 +90,29 @@ export function AccountMenu({ agreementUrl, email, onSignOut, onChangePassword }
             textOverflow: 'ellipsis',
             background: 'white',
             color: '#11314D',
-            fontSize: 13,
-            fontWeight: 500,
             lineHeight: 1.1,
             borderRadius: 9999,
             transition: 'max-width 200ms ease, opacity 150ms ease, padding 200ms ease, margin 200ms ease',
             pointerEvents: expanded ? 'auto' : 'none',
+            display: 'inline-flex',
+            flexDirection: 'column',
+            alignItems: 'flex-end',
           }}
         >
-          {email}
+          {displayName && (
+            <span style={{ fontSize: 13, fontWeight: 600 }}>{displayName}</span>
+          )}
+          {email && (
+            <span
+              style={{
+                fontSize: displayName ? 11 : 13,
+                fontWeight: displayName ? 400 : 500,
+                opacity: displayName ? 0.7 : 1,
+              }}
+            >
+              {email}
+            </span>
+          )}
         </span>
       )}
       <button
@@ -104,8 +125,8 @@ export function AccountMenu({ agreementUrl, email, onSignOut, onChangePassword }
         onBlur={() => setFocus(false)}
         aria-expanded={open}
         aria-haspopup="true"
-        aria-label={email ? `Open account menu for ${email}` : 'Open account menu'}
-        title={email || undefined}
+        aria-label={displayName ? `Open account menu for ${displayName}` : email ? `Open account menu for ${email}` : 'Open account menu'}
+        title={displayName || email || undefined}
         style={{
           display: 'flex',
           alignItems: 'center',
@@ -134,7 +155,7 @@ export function AccountMenu({ agreementUrl, email, onSignOut, onChangePassword }
             top: 'calc(100% + 8px)',
             right: 0,
             zIndex: 9999,
-            minWidth: 220,
+            minWidth: 240,
             background: '#0E1019',
             border: '1px solid rgba(255,255,255,0.08)',
             borderRadius: 4,
@@ -142,6 +163,32 @@ export function AccountMenu({ agreementUrl, email, onSignOut, onChangePassword }
             overflow: 'hidden',
           }}
         >
+          {(displayName || email) && (
+            <div
+              style={{
+                padding: '10px 16px',
+                borderBottom: '1px solid rgba(255,255,255,0.08)',
+                background: 'rgba(255,255,255,0.03)',
+              }}
+            >
+              {displayName && (
+                <div style={{ fontSize: 13, fontWeight: 600, color: '#f3f4f6', lineHeight: 1.2 }}>{displayName}</div>
+              )}
+              {email && (
+                <div
+                  style={{
+                    fontSize: displayName ? 11 : 13,
+                    color: displayName ? '#9ca3af' : '#e5e7eb',
+                    marginTop: displayName ? 2 : 0,
+                    lineHeight: 1.2,
+                    wordBreak: 'break-all',
+                  }}
+                >
+                  {email}
+                </div>
+              )}
+            </div>
+          )}
           {agreementUrl && (
             <a
               href={agreementUrl}
