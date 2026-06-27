@@ -32,7 +32,27 @@
  *   shape so the SPA can degrade gracefully (e.g. show a local-only toast
  *   with the diagnostics inline when the report endpoint is unreachable).
  */
-export async function reportError(diagnostics, apiBase) {
+/**
+ * Submit an error diagnostic bundle to f2-admin-service2's public
+ * error-report endpoint. Returns { id: 'ER-XXXXXXX' } on success.
+ *
+ * @param {Object} diagnostics - the error payload shape (error_code,
+ *                               customer, scanner_path, http_status,
+ *                               f2_response_body, etc.).
+ * @param {string} apiBase     - backend base URL (e.g. env.f2ApiUrl).
+ * @param {Object} [opts]      - optional config.
+ * @param {string} [opts.authToken] - signed-in user's id_token. When
+ *   provided, sent as `Authorization: Bearer <token>` so the backend can
+ *   opportunistically decode the JWT claims (email, custom:role,
+ *   custom:customers, iss, iat, exp, etc.) and stamp them into the ER
+ *   without the caller having to populate user_email/role itself. Safe
+ *   for the public submit endpoint — the backend does NOT verify the
+ *   signature, it just reads claims for diagnostic surface. The wrong-
+ *   pool/expired-token cases (exactly when we want identity visible)
+ *   still produce enrichment because we don't reject based on claim
+ *   validity. Mike 2026-06-27 (ER-HKE8RBM).
+ */
+export async function reportError(diagnostics, apiBase, opts) {
   if (!apiBase || typeof apiBase !== 'string') {
     return { error: true, status: null, body: null, message: 'reportError: missing apiBase' };
   }
@@ -43,11 +63,16 @@ export async function reportError(diagnostics, apiBase) {
     if (!payload.url) payload.url = window.location.href;
     if (!payload.user_agent && window.navigator) payload.user_agent = window.navigator.userAgent || undefined;
   }
+  const headers = { 'Content-Type': 'application/json' };
+  const authToken = opts && opts.authToken;
+  if (authToken && typeof authToken === 'string') {
+    headers['Authorization'] = 'Bearer ' + authToken;
+  }
   let res;
   try {
     res = await fetch(base + '/rest/api/error-report', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify(payload),
     });
   } catch (e) {

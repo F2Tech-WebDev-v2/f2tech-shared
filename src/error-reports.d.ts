@@ -22,10 +22,24 @@ export type ErrorReportResult =
   | { id: string }
   | { error: true; status: number | null; body: any; message: string };
 
+export interface ReportErrorOptions {
+  /**
+   * Signed-in user's id_token. When provided, sent as `Authorization: Bearer`
+   * so the backend opportunistically decodes claims into the ER. Backend does
+   * NOT verify the signature — safe to pass expired/wrong-pool tokens; those
+   * are exactly the cases where we want identity stamped.
+   */
+  authToken?: string;
+}
+
 /**
  * Submit an error report to the F2 admin backend. Returns the short ID
  * (`ER-XXXXXXX`) that the SPA surfaces via the toast's copy button.
  * Returns a structured error shape on any failure so the SPA can show
  * a graceful local toast (no inline diagnostics dump on the user).
  */
-export function reportError(diagnostics: ErrorDiagnostics, apiBase: string): Promise<ErrorReportResult>;
+export function reportError(
+  diagnostics: ErrorDiagnostics,
+  apiBase: string,
+  opts?: ReportErrorOptions,
+): Promise<ErrorReportResult>;

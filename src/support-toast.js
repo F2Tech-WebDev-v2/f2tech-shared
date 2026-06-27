@@ -39,8 +39,14 @@ import { reportError } from './error-reports.js';
  *   captured server-side from the request.
  * @param {string} apiBase    f2-admin-service host (no trailing /rest);
  *   /rest/api/error-report is appended internally.
+ * @param {object} [opts]     optional config forwarded to reportError.
+ * @param {string} [opts.authToken] signed-in user's id_token. When provided,
+ *   the backend opportunistically decodes claims (email, role, customers,
+ *   iss, iat, exp) and stamps them into the ER so support sees who hit the
+ *   error without each SPA having to populate user_email itself. Backend
+ *   does NOT verify the signature — purely a diagnostic surface.
  */
-export function errorWithSupportId(toastr, title, message, diagnostics, apiBase) {
+export function errorWithSupportId(toastr, title, message, diagnostics, apiBase, opts) {
   if (!diagnostics) {
     toastr.error(message, title);
     return;
@@ -57,7 +63,7 @@ export function errorWithSupportId(toastr, title, message, diagnostics, apiBase)
       closeButton: true,
     },
   );
-  reportError(diagnostics, apiBase).then((res) => {
+  reportError(diagnostics, apiBase, opts).then((res) => {
     try { toastr.remove(placeholderRef?.toastId); } catch { /* swallow */ }
     if (res && typeof res.id === 'string') {
       const idMsg = (message ? message + '\n' : '') +
