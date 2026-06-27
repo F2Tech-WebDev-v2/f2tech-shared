@@ -44,7 +44,7 @@ import { CommonModule } from '@angular/common';
         [style.padding-right.px]="expanded ? 12 : 0"
         [style.margin-right.px]="expanded ? 8 : 0"
         [style.pointer-events]="expanded ? 'auto' : 'none'"
-        style="padding-top:6px;padding-bottom:6px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;background:white;color:#11314D;line-height:1.1;border-radius:9999px;transition:max-width 200ms ease,opacity 150ms ease,padding 200ms ease,margin 200ms ease;display:inline-flex;flex-direction:column;align-items:flex-end"
+        style="padding-top:6px;padding-bottom:6px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;background:var(--brand-accent, white);color:var(--brand-accent-text, #11314D);line-height:1.1;border-radius:9999px;transition:max-width 200ms ease,opacity 150ms ease,padding 200ms ease,margin 200ms ease;display:inline-flex;flex-direction:column;align-items:flex-end"
       >
         <span *ngIf="displayName" style="font-size:13px;font-weight:600">{{ displayName }}</span>
         <span *ngIf="email" [style.font-size.px]="displayName ? 11 : 13" [style.font-weight]="displayName ? 400 : 500" [style.opacity]="displayName ? 0.7 : 1">{{ email }}</span>
@@ -58,26 +58,26 @@ import { CommonModule } from '@angular/common';
         aria-haspopup="true"
         [attr.aria-label]="ariaLabel"
         [attr.title]="displayName || email || null"
-        style="display:flex;align-items:center;justify-content:center;width:32px;height:32px;border-radius:9999px;background:white;border:0;padding:0;cursor:pointer"
+        style="display:flex;align-items:center;justify-content:center;width:32px;height:32px;border-radius:9999px;background:var(--brand-accent, white);border:0;padding:0;cursor:pointer"
       >
         <svg width="22" height="22" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-          <circle cx="12" cy="12" r="11" fill="#11314D"/>
-          <circle cx="12" cy="9.5" r="3.25" fill="white"/>
-          <path d="M5.5 19c1.2-3.2 3.7-4.75 6.5-4.75S17.3 15.8 18.5 19" stroke="white" stroke-width="1.6" stroke-linecap="round" fill="none"/>
+          <circle cx="12" cy="12" r="11" [attr.fill]="'var(--brand-accent-text, #11314D)'"/>
+          <circle cx="12" cy="9.5" r="3.25" [attr.fill]="'var(--brand-accent, white)'"/>
+          <path d="M5.5 19c1.2-3.2 3.7-4.75 6.5-4.75S17.3 15.8 18.5 19" [attr.stroke]="'var(--brand-accent, white)'" stroke-width="1.6" stroke-linecap="round" fill="none"/>
         </svg>
       </button>
 
       <div
         *ngIf="open"
         role="menu"
-        style="position:absolute;top:calc(100% + 8px);right:0;z-index:9999;min-width:240px;background:#0E1019;border:1px solid rgba(255,255,255,0.08);border-radius:4px;box-shadow:0 6px 16px rgba(0,0,0,0.4);overflow:hidden"
+        style="position:absolute;top:calc(100% + 8px);right:0;z-index:9999;min-width:240px;background:var(--brand-panel-to, #0E1019);border:1px solid var(--brand-panel-border, rgba(255,255,255,0.08));border-radius:4px;box-shadow:0 6px 16px rgba(0,0,0,0.4);overflow:hidden"
       >
         <div
           *ngIf="displayName || email"
-          style="padding:10px 16px;border-bottom:1px solid rgba(255,255,255,0.08);background:rgba(255,255,255,0.03)"
+          style="padding:10px 16px;border-bottom:1px solid var(--brand-panel-border, rgba(255,255,255,0.08));background:var(--brand-panel-bg-hover, rgba(255,255,255,0.03))"
         >
-          <div *ngIf="displayName" style="font-size:13px;font-weight:600;color:#f3f4f6;line-height:1.2">{{ displayName }}</div>
-          <div *ngIf="email" [style.font-size.px]="displayName ? 11 : 13" [style.color]="displayName ? '#9ca3af' : '#e5e7eb'" [style.margin-top.px]="displayName ? 2 : 0" style="line-height:1.2;word-break:break-all">{{ email }}</div>
+          <div *ngIf="displayName" style="font-size:13px;font-weight:600;color:var(--brand-text-primary, #f3f4f6);line-height:1.2">{{ displayName }}</div>
+          <div *ngIf="email" [style.font-size.px]="displayName ? 11 : 13" [style.color]="displayName ? 'var(--brand-text-muted, #9ca3af)' : 'var(--brand-text-primary, #e5e7eb)'" [style.margin-top.px]="displayName ? 2 : 0" style="line-height:1.2;word-break:break-all">{{ email }}</div>
         </div>
         <a
           *ngIf="agreementUrl"
@@ -86,24 +86,24 @@ import { CommonModule } from '@angular/common';
           rel="noopener noreferrer"
           role="menuitem"
           (click)="open = false"
-          style="display:block;padding:10px 16px;font-size:14px;color:#e5e7eb;text-decoration:none;cursor:pointer"
-          onmouseover="this.style.background='rgba(255,255,255,0.08)'"
+          style="display:block;padding:10px 16px;font-size:14px;color:var(--brand-text-primary, #e5e7eb);text-decoration:none;cursor:pointer"
+          onmouseover="this.style.background='var(--brand-panel-bg-hover, rgba(255,255,255,0.08))'"
           onmouseout="this.style.background='transparent'"
         >Exchange Agreements</a>
         <button
           type="button"
           role="menuitem"
           (click)="onChangePassword()"
-          style="display:block;width:100%;text-align:left;padding:10px 16px;font-size:14px;color:#e5e7eb;background:transparent;border:0;cursor:pointer"
-          onmouseover="this.style.background='rgba(255,255,255,0.08)'"
+          style="display:block;width:100%;text-align:left;padding:10px 16px;font-size:14px;color:var(--brand-text-primary, #e5e7eb);background:transparent;border:0;cursor:pointer"
+          onmouseover="this.style.background='var(--brand-panel-bg-hover, rgba(255,255,255,0.08))'"
           onmouseout="this.style.background='transparent'"
         >Change password</button>
         <button
           type="button"
           role="menuitem"
           (click)="onSignOut()"
-          style="display:block;width:100%;text-align:left;padding:10px 16px;font-size:14px;color:#e5e7eb;background:transparent;border:0;border-top:1px solid rgba(255,255,255,0.08);cursor:pointer"
-          onmouseover="this.style.background='rgba(255,255,255,0.08)'"
+          style="display:block;width:100%;text-align:left;padding:10px 16px;font-size:14px;color:var(--brand-text-primary, #e5e7eb);background:transparent;border:0;border-top:1px solid var(--brand-panel-border, rgba(255,255,255,0.08));cursor:pointer"
+          onmouseover="this.style.background='var(--brand-panel-bg-hover, rgba(255,255,255,0.08))'"
           onmouseout="this.style.background='transparent'"
         >Sign out</button>
       </div>

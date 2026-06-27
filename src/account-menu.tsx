@@ -55,16 +55,27 @@ export function AccountMenu({ agreementUrl, email, firstName, lastName, onSignOu
   // header inside the menu can be dropped without losing context.
   const expanded = hasIdentity && (hover || focus || open);
 
+  // Per-customer brand-aware colors. Each value falls back to the pre-
+  // theming hex so SPAs without a Customer.branding subdoc render exactly
+  // as before. Light-on-dark dropdown was the original f2 default and
+  // still matches dark-themed customers (hima); light-themed customers
+  // (option-pit cream + lime) get the lime accent on the coin/pill and
+  // their panel-to color in the dropdown sheet. Mike 2026-06-27.
   const itemBase = {
     display: 'block' as const,
     padding: '10px 16px',
     fontSize: 14,
-    color: '#e5e7eb',
+    color: 'var(--brand-text-primary, #e5e7eb)',
     textDecoration: 'none',
     background: 'transparent',
     border: 0,
     cursor: 'pointer',
   };
+  // rgba-fallback variants keep the original subtle overlay look on
+  // brands that don't supply panel-bg-hover / panel-border, and inherit
+  // the brand-tinted color on those that do.
+  const itemHoverBg = 'var(--brand-panel-bg-hover, rgba(255,255,255,0.08))';
+  const sheetBorder = 'var(--brand-panel-border, rgba(255,255,255,0.08))';
 
   return (
     <div
@@ -88,8 +99,8 @@ export function AccountMenu({ agreementUrl, email, firstName, lastName, onSignOu
             overflow: 'hidden',
             whiteSpace: 'nowrap',
             textOverflow: 'ellipsis',
-            background: 'white',
-            color: '#11314D',
+            background: 'var(--brand-accent, white)',
+            color: 'var(--brand-accent-text, #11314D)',
             lineHeight: 1.1,
             borderRadius: 9999,
             transition: 'max-width 200ms ease, opacity 150ms ease, padding 200ms ease, margin 200ms ease',
@@ -134,16 +145,22 @@ export function AccountMenu({ agreementUrl, email, firstName, lastName, onSignOu
           width: 32,
           height: 32,
           borderRadius: 9999,
-          background: 'white',
+          background: 'var(--brand-accent, white)',
           border: 0,
           padding: 0,
           cursor: 'pointer',
         }}
       >
         <svg width={22} height={22} viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-          <circle cx="12" cy="12" r="11" fill="#11314D" />
-          <circle cx="12" cy="9.5" r="3.25" fill="white" />
-          <path d="M5.5 19c1.2-3.2 3.7-4.75 6.5-4.75S17.3 15.8 18.5 19" stroke="white" strokeWidth={1.6} strokeLinecap="round" fill="none" />
+          {/* The figure silhouette inside the coin uses --brand-accent-text
+              for the bg circle (the same dark color paired with the lime/
+              white coin bg above), and --brand-accent for the figure
+              itself so it inherits the coin tone — keeps the contrast
+              ratio identical to the default white-on-navy design when
+              swapped with any brand pair. */}
+          <circle cx="12" cy="12" r="11" fill="var(--brand-accent-text, #11314D)" />
+          <circle cx="12" cy="9.5" r="3.25" fill="var(--brand-accent, white)" />
+          <path d="M5.5 19c1.2-3.2 3.7-4.75 6.5-4.75S17.3 15.8 18.5 19" stroke="var(--brand-accent, white)" strokeWidth={1.6} strokeLinecap="round" fill="none" />
         </svg>
       </button>
 
@@ -156,8 +173,8 @@ export function AccountMenu({ agreementUrl, email, firstName, lastName, onSignOu
             right: 0,
             zIndex: 9999,
             minWidth: 240,
-            background: '#0E1019',
-            border: '1px solid rgba(255,255,255,0.08)',
+            background: 'var(--brand-panel-to, #0E1019)',
+            border: `1px solid ${sheetBorder}`,
             borderRadius: 4,
             boxShadow: '0 6px 16px rgba(0,0,0,0.4)',
             overflow: 'hidden',
@@ -167,18 +184,18 @@ export function AccountMenu({ agreementUrl, email, firstName, lastName, onSignOu
             <div
               style={{
                 padding: '10px 16px',
-                borderBottom: '1px solid rgba(255,255,255,0.08)',
-                background: 'rgba(255,255,255,0.03)',
+                borderBottom: `1px solid ${sheetBorder}`,
+                background: 'var(--brand-panel-bg-hover, rgba(255,255,255,0.03))',
               }}
             >
               {displayName && (
-                <div style={{ fontSize: 13, fontWeight: 600, color: '#f3f4f6', lineHeight: 1.2 }}>{displayName}</div>
+                <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--brand-text-primary, #f3f4f6)', lineHeight: 1.2 }}>{displayName}</div>
               )}
               {email && (
                 <div
                   style={{
                     fontSize: displayName ? 11 : 13,
-                    color: displayName ? '#9ca3af' : '#e5e7eb',
+                    color: displayName ? 'var(--brand-text-muted, #9ca3af)' : 'var(--brand-text-primary, #e5e7eb)',
                     marginTop: displayName ? 2 : 0,
                     lineHeight: 1.2,
                     wordBreak: 'break-all',
@@ -197,7 +214,7 @@ export function AccountMenu({ agreementUrl, email, firstName, lastName, onSignOu
               role="menuitem"
               onClick={() => setOpen(false)}
               style={itemBase}
-              onMouseOver={(e) => (e.currentTarget.style.background = 'rgba(255,255,255,0.08)')}
+              onMouseOver={(e) => (e.currentTarget.style.background = itemHoverBg)}
               onMouseOut={(e) => (e.currentTarget.style.background = 'transparent')}
             >
               Exchange Agreements
@@ -211,7 +228,7 @@ export function AccountMenu({ agreementUrl, email, firstName, lastName, onSignOu
               onChangePassword();
             }}
             style={{ ...itemBase, width: '100%', textAlign: 'left' }}
-            onMouseOver={(e) => (e.currentTarget.style.background = 'rgba(255,255,255,0.08)')}
+            onMouseOver={(e) => (e.currentTarget.style.background = itemHoverBg)}
             onMouseOut={(e) => (e.currentTarget.style.background = 'transparent')}
           >
             Change password
@@ -223,8 +240,8 @@ export function AccountMenu({ agreementUrl, email, firstName, lastName, onSignOu
               setOpen(false);
               onSignOut();
             }}
-            style={{ ...itemBase, width: '100%', textAlign: 'left', borderTop: '1px solid rgba(255,255,255,0.08)' }}
-            onMouseOver={(e) => (e.currentTarget.style.background = 'rgba(255,255,255,0.08)')}
+            style={{ ...itemBase, width: '100%', textAlign: 'left', borderTop: `1px solid ${sheetBorder}` }}
+            onMouseOver={(e) => (e.currentTarget.style.background = itemHoverBg)}
             onMouseOut={(e) => (e.currentTarget.style.background = 'transparent')}
           >
             Sign out
