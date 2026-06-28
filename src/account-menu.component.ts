@@ -141,7 +141,21 @@ export interface AccountMenuItem {
 
 export class AccountMenuComponent {
   @Input() agreementUrl: string | null = null;
-  @Input() email: string | null = null;
+  // Backing field for the email Input; the public setter sanitizes
+  // to enforce "only @-shaped values are displayed". Consumers
+  // historically fell back to user.username when email was empty,
+  // and Username on auto-username Cognito pools IS the sub UUID
+  // (e.g. "64686498-4081-70da-..."), which lands in the chip as a
+  // random ID number. Single enforcement point: any non-@-shaped
+  // input is treated as null. Per feedback_never_display_username
+  // _uuid.
+  private _email: string | null = null;
+  @Input() set email(value: string | null) {
+    if (!value) { this._email = null; return; }
+    const s = String(value).trim();
+    this._email = (!s || !s.includes('@')) ? null : s;
+  }
+  get email(): string | null { return this._email; }
   @Input() firstName: string | null = null;
   @Input() lastName: string | null = null;
   @Input() customItems: AccountMenuItem[] = [];

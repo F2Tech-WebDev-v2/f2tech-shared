@@ -40,7 +40,30 @@ export interface AccountMenuProps {
   onChangePassword: () => void;
 }
 
-export function AccountMenu({ agreementUrl, email, firstName, lastName, customItems, onSignOut, onChangePassword }: AccountMenuProps) {
+/**
+ * Filter the `email` prop down to "only real emails". Consumers
+ * historically did `user?.email ?? user?.username ?? null` as a
+ * fallback chain — but Username on auto-username Cognito pools IS
+ * the sub UUID, so the chip ended up showing
+ * "64686498-4081-70da-..." which reads as a random ID to the user.
+ * Same shape ID can also leak from a bundle's user.email field if
+ * the mint side fell back to Username.
+ *
+ * Single enforcement point: any email value that doesn't contain
+ * '@' is treated as null. Consumers can pass whatever; the chip
+ * NEVER shows non-email-shaped values.
+ *
+ * Per the standing rule feedback_never_display_username_uuid.
+ */
+function safeEmail(value: string | null | undefined): string | null {
+  if (!value) return null;
+  const s = String(value).trim();
+  if (!s || !s.includes('@')) return null;
+  return s;
+}
+
+export function AccountMenu({ agreementUrl, email: emailIn, firstName, lastName, customItems, onSignOut, onChangePassword }: AccountMenuProps) {
+  const email = safeEmail(emailIn);
   const [hover, setHover] = useState(false);
   const [focus, setFocus] = useState(false);
   const [open, setOpen] = useState(false);
