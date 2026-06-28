@@ -90,6 +90,24 @@ import { CommonModule } from '@angular/common';
           onmouseover="this.style.background='var(--brand-panel-bg-hover, rgba(255,255,255,0.08))'"
           onmouseout="this.style.background='transparent'"
         >Exchange Agreements</a>
+        <ng-container *ngFor="let item of customItems; trackBy: trackCustomItem">
+          <a *ngIf="item.href"
+            [href]="item.href"
+            role="menuitem"
+            (click)="open = false"
+            style="display:block;padding:10px 16px;font-size:14px;color:var(--brand-text-primary, #e5e7eb);text-decoration:none;cursor:pointer"
+            onmouseover="this.style.background='var(--brand-panel-bg-hover, rgba(255,255,255,0.08))'"
+            onmouseout="this.style.background='transparent'"
+          >{{ item.label }}</a>
+          <button *ngIf="!item.href"
+            type="button"
+            role="menuitem"
+            (click)="onCustomItem(item)"
+            style="display:block;width:100%;text-align:left;padding:10px 16px;font-size:14px;color:var(--brand-text-primary, #e5e7eb);background:transparent;border:0;cursor:pointer"
+            onmouseover="this.style.background='var(--brand-panel-bg-hover, rgba(255,255,255,0.08))'"
+            onmouseout="this.style.background='transparent'"
+          >{{ item.label }}</button>
+        </ng-container>
         <button
           type="button"
           role="menuitem"
@@ -110,17 +128,38 @@ import { CommonModule } from '@angular/common';
     </div>
   `,
 })
+/**
+ * Optional consumer-injected dropdown items. Each renders between
+ * Exchange Agreements and Change password. Items with `href` render
+ * as <a>; items with `clicked` callback render as <button>.
+ */
+export interface AccountMenuItem {
+  label: string;
+  href?: string;
+  clicked?: () => void;
+}
+
 export class AccountMenuComponent {
   @Input() agreementUrl: string | null = null;
   @Input() email: string | null = null;
   @Input() firstName: string | null = null;
   @Input() lastName: string | null = null;
+  @Input() customItems: AccountMenuItem[] = [];
   @Output() signOut = new EventEmitter<void>();
   @Output() changePassword = new EventEmitter<void>();
 
   open = false;
   hover = false;
   focus = false;
+
+  trackCustomItem(_idx: number, item: AccountMenuItem) {
+    return item.label;
+  }
+
+  onCustomItem(item: AccountMenuItem) {
+    this.open = false;
+    if (typeof item.clicked === 'function') item.clicked();
+  }
 
   constructor(private host: ElementRef<HTMLElement>) {}
 

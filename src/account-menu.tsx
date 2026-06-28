@@ -16,16 +16,31 @@ import { useEffect, useRef, useState } from 'react';
  * Self-contained — no external icon or dropdown library.
  */
 
+/**
+ * Optional consumer-injected dropdown items. Each renders between
+ * Exchange Agreements and Change password. Items with `href` render
+ * as <a>; items with `onClick` render as <button>. Consumers gate
+ * visibility on their own (pass an empty array to hide all). Used
+ * by f2-members to surface its admin-only "Integration" link inside
+ * the menu rather than as a sibling header link.
+ */
+export interface AccountMenuItem {
+  label: string;
+  href?: string;
+  onClick?: () => void;
+}
+
 export interface AccountMenuProps {
   agreementUrl?: string | null;
   email?: string | null;
   firstName?: string | null;
   lastName?: string | null;
+  customItems?: AccountMenuItem[];
   onSignOut: () => void;
   onChangePassword: () => void;
 }
 
-export function AccountMenu({ agreementUrl, email, firstName, lastName, onSignOut, onChangePassword }: AccountMenuProps) {
+export function AccountMenu({ agreementUrl, email, firstName, lastName, customItems, onSignOut, onChangePassword }: AccountMenuProps) {
   const [hover, setHover] = useState(false);
   const [focus, setFocus] = useState(false);
   const [open, setOpen] = useState(false);
@@ -219,6 +234,36 @@ export function AccountMenu({ agreementUrl, email, firstName, lastName, onSignOu
             >
               Exchange Agreements
             </a>
+          )}
+          {(customItems || []).map((item, idx) =>
+            item.href ? (
+              <a
+                key={`ci-${idx}`}
+                href={item.href}
+                role="menuitem"
+                onClick={() => setOpen(false)}
+                style={itemBase}
+                onMouseOver={(e) => (e.currentTarget.style.background = itemHoverBg)}
+                onMouseOut={(e) => (e.currentTarget.style.background = 'transparent')}
+              >
+                {item.label}
+              </a>
+            ) : (
+              <button
+                key={`ci-${idx}`}
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  setOpen(false);
+                  item.onClick?.();
+                }}
+                style={{ ...itemBase, width: '100%', textAlign: 'left' }}
+                onMouseOver={(e) => (e.currentTarget.style.background = itemHoverBg)}
+                onMouseOut={(e) => (e.currentTarget.style.background = 'transparent')}
+              >
+                {item.label}
+              </button>
+            )
           )}
           <button
             type="button"
