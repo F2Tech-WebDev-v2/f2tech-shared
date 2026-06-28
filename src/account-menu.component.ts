@@ -2,6 +2,17 @@ import { Component, Input, Output, EventEmitter, HostListener, ElementRef } from
 import { CommonModule } from '@angular/common';
 
 /**
+ * Optional consumer-injected dropdown items. Each renders between
+ * Exchange Agreements and Change password. Items with `href` render
+ * as <a>; items with `clicked` callback render as <button>.
+ */
+export interface AccountMenuItem {
+  label: string;
+  href?: string;
+  clicked?: () => void;
+}
+
+/**
  * Canonical Angular standalone component for the top-right "account
  * coin" + dropdown. Replaces the inline `id="user-menu-button"` HTML
  * duplicated across theo-trade, option-pit, alpha-shark, delphi-signal,
@@ -128,17 +139,6 @@ import { CommonModule } from '@angular/common';
     </div>
   `,
 })
-/**
- * Optional consumer-injected dropdown items. Each renders between
- * Exchange Agreements and Change password. Items with `href` render
- * as <a>; items with `clicked` callback render as <button>.
- */
-export interface AccountMenuItem {
-  label: string;
-  href?: string;
-  clicked?: () => void;
-}
-
 export class AccountMenuComponent {
   @Input() agreementUrl: string | null = null;
   // Backing field for the email Input; the public setter sanitizes
