@@ -103,6 +103,13 @@ export async function redeemSid(sid, apiBase) {
       id_token: body.id_token,
       refresh_token: body.refresh_token || "",
       user: body.user || {},
+      // Per-session origin metadata (added 2026-06-30, f2-admin-service
+      // 05df315). Sticky on the bundle so SPAs can persist them and
+      // bounce SSO-only customers (e.g. theo-trade) to their portal on
+      // logout / session expiry. Absent on legacy mints predating the
+      // backend change — SPAs treat undefined as "use /login".
+      sso_origin: body.sso_origin === true,
+      external_login_url: body.external_login_url ?? null,
     },
   };
 }

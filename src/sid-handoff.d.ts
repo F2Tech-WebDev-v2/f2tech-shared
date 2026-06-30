@@ -14,6 +14,15 @@ export interface SsoTokenBundle {
     scanners?: string;
     [k: string]: any;
   };
+  // Per-session origin metadata stamped by the backend at mint time.
+  // sso_origin=true when minted via /rest/auth/redeem-session for an
+  // SSO entry (sid / token_query handoff); false for /rest/auth/login.
+  // external_login_url is the customer's configured logout/expiry
+  // bounce target (Customers.<slug>.auth.external_login_url) or null.
+  // SPAs gate the external bounce on sso_origin so members-origin
+  // sessions still route to /login. See f2-admin-service 05df315.
+  sso_origin?: boolean;
+  external_login_url?: string | null;
 }
 
 export type SidRedeemResult =
