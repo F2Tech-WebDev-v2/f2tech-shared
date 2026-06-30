@@ -1,10 +1,6 @@
 {
   "name": "f2tech-shared",
-<<<<<<< HEAD
-  "version": "0.19.1",
-=======
-  "version": "0.18.0",
->>>>>>> 67efb01 (sid-handoff v0.18.0: pass through sso_origin + external_login_url)
+  "version": "0.20.0",
   "description": "Shared cross-project helpers for the F2 Tech web stack — single source of truth for TLD detection, per-TLD URL handling, opaque-sid SSO handoff, per-customer agreements / data-tier flags, and canonical UI components (data-tier banner, exchange-agreements popup/banner, account-menu coin) so changes land in one place instead of N repos.",
   "type": "module",
   "main": "./src/index.js",
