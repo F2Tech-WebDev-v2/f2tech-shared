@@ -70,10 +70,17 @@ export async function reportError(diagnostics, apiBase, opts) {
   }
   let res;
   try {
+    // keepalive:true guarantees the POST completes even if the page
+    // unloads mid-request. Critical for the "silent bounce" pattern
+    // (theo-trade 2026-07-03: canActivate fires reportError then
+    // hard-navs to the customer portal — without keepalive the fetch
+    // is aborted and no ER reaches the backend). 64KB payload cap in
+    // the spec; error diagnostics are well under that.
     res = await fetch(base + '/rest/api/error-report', {
       method: 'POST',
       headers,
       body: JSON.stringify(payload),
+      keepalive: true,
     });
   } catch (e) {
     return {
