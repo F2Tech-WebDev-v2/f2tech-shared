@@ -66,8 +66,22 @@ export async function redeemSid(sid, apiBase) {
   const base = apiBase.endsWith("/") ? apiBase.slice(0, -1) : apiBase;
   let res;
   try {
+    // credentials: 'include' — the redeem-session response emits
+    // Set-Cookie for f2_access / f2_id / f2_refresh; without this
+    // flag, `fetch` defaults to `same-origin` and the browser SILENTLY
+    // DROPS the Set-Cookie headers on cross-origin requests. That
+    // makes IT-F2-69's SameSite=None; Secure; Partitioned cookie flip
+    // effectively useless on this XHR — cookies come back on the wire
+    // but the browser never persists them to the scanner origin, so
+    // F5 recovery via mint-sid-from-cookies (per feedback_per_
+    // product_spa_f5_cookie_recovery_pattern) silently fails and the
+    // SPA bounces to the customer SSO on every iframe reload. Fix:
+    // opt-in to credentials on this cookie-emitting endpoint. Safe now
+    // that f2-admin-service's CORS allowlist (IT-F2-69 phase 1a) rejects
+    // untrusted origins with credentials.
     res = await fetch(base + "/rest/auth/redeem-session", {
       method: "POST",
+      credentials: "include",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ sid }),
     });
