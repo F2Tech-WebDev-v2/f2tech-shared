@@ -54,6 +54,10 @@
       "types": "./src/exchange-agreements-popup.tsx",
       "default": "./src/exchange-agreements-popup.tsx"
     },
+    "./exchange-agreements-banner": {
+      "types": "./src/exchange-agreements-banner.tsx",
+      "default": "./src/exchange-agreements-banner.tsx"
+    },
     "./account-menu.component": {
       "types": "./src/account-menu.component.ts",
       "default": "./src/account-menu.component.ts"
