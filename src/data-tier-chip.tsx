@@ -33,10 +33,31 @@ export type DataTier =
 
 export type ReviewStatus = 'pending' | 'approved' | 'declined' | null;
 
+/**
+ * Optional server-driven copy for the chip. Mike IT-F2-413 c/7420760c
+ * 2026-09-22: "the friendly names for the chip should be in the service
+ * not in the app so they are common across all implementations".
+ * Backend `get_user_data_agreements(sanitize=1)` now returns a `chip`
+ * subdoc when the tier has a chip variant; consumers pass it through
+ * unchanged. When absent (older backend OR consumer hasn't wired the
+ * pass-through), we fall back to the hardcoded copy below so this
+ * change is fully backwards-compatible.
+ */
+export type ChipVariant = 'live' | 'displaced' | 'pro' | 'pending' | 'declined' | 'delayed';
+export interface ChipCopy {
+  variant: ChipVariant;
+  label: string;
+  title: string;
+  aria_label: string;
+}
+
 export interface DataTierChipProps {
   dataTier?: DataTier;
   reviewStatus?: ReviewStatus;
   onAgreementsClick?: () => void;
+  /** When supplied, overrides the hardcoded chip copy — set from the
+   *  backend's data-agreements sanitize response. */
+  chip?: ChipCopy | null;
 }
 
 const OpenIcon = () => (
@@ -89,8 +110,8 @@ function reclaimAndReload() {
   window.location.reload();
 }
 
-export function DataTierChip({ dataTier, reviewStatus, onAgreementsClick }: DataTierChipProps) {
-  const chip = renderChip({ dataTier, reviewStatus, onAgreementsClick });
+export function DataTierChip({ dataTier, reviewStatus, onAgreementsClick, chip: serverChip }: DataTierChipProps) {
+  const chip = renderChip({ dataTier, reviewStatus, onAgreementsClick, chip: serverChip });
   if (!chip) return null;
   return (
     <div className="dtc-wrap">
@@ -100,8 +121,32 @@ export function DataTierChip({ dataTier, reviewStatus, onAgreementsClick }: Data
   );
 }
 
-function renderChip({ dataTier, reviewStatus, onAgreementsClick }: DataTierChipProps): JSX.Element | null {
+function renderChip({ dataTier, reviewStatus, onAgreementsClick, chip: serverChip }: DataTierChipProps): JSX.Element | null {
   if (!dataTier) return null;
+  // Server-driven copy path (IT-F2-413 c/7420760c). When the backend
+  // includes a `chip` subdoc on the sanitize response, render from that
+  // directly. Variant → styling class (same names as the hardcoded
+  // branches below so CSS stays reused); click handler routes to
+  // reclaim-and-reload for 'displaced', otherwise onAgreementsClick.
+  if (serverChip && serverChip.variant) {
+    const clsMap: Record<ChipVariant, string> = {
+      live: 'live', displaced: 'displaced', pro: 'pro',
+      pending: 'pending', declined: 'declined', delayed: '',
+    };
+    const cls = `dtc-chip ${clsMap[serverChip.variant] || ''}`.trim();
+    const onClick = serverChip.variant === 'displaced' ? reclaimAndReload : onAgreementsClick;
+    // Declined variant historically carried an OpenIcon; preserve that
+    // when the server flags variant=declined for parity.
+    const trailIcon = serverChip.variant === 'declined' || (serverChip.variant === 'delayed' && serverChip.label.includes('Delayed'))
+      ? <OpenIcon />
+      : null;
+    return (
+      <button type="button" className={cls} onClick={onClick}
+        title={serverChip.title} aria-label={serverChip.aria_label}>
+        <em aria-hidden="true">●</em> {serverChip.label}{trailIcon}
+      </button>
+    );
+  }
 
   if (dataTier === 'realtime') {
     return (
