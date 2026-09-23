@@ -143,6 +143,28 @@ Fix: drop empty dates so "latest" always points at the newest populated
 day. Every SPA adopting this recipe MUST filter — the picker itself has
 no way to know a date is "there but empty".
 
+### 4.5 Two invariants the picker cannot violate
+
+Mike IT-F2-360 c/91a0942f 2026-09-23 (during oxc-rrg picker rollout):
+
+1. **No selectable dates without data.** Do NOT ship the picker without
+   `availableDates` populated. The graceful-degrade "every date ≤ today
+   clickable" mode from §7 is fine for a single dev smoke, but MUST NOT
+   ship to a customer — it lets the user pick an empty date and stare
+   at the empty state. If the SPA's backend hasn't opened `/dates` yet,
+   either (a) block the picker mount until it does, or (b) fall back
+   to a hardcoded list scoped to the pipeline's known start date. See
+   §8 checklist.
+
+2. **Chip displays the loaded snapshot's date, not "today".** This is
+   an end-of-day scanner pattern — the server rolls back to the most
+   recent populated db when today's isn't ready yet (per §4.4 filter +
+   the f2-api `findLatestPatternDb` fallback in the `resolveDbForRequest`
+   handler). The picker's `todayLabel` MUST reflect whatever date the
+   server actually returned, not `todayIso()`. Pass the loaded
+   snapshot's own date (usually `data.asOf` or equivalent) as
+   `todayLabel` when `value === ""`.
+
 ---
 
 ## 5. State machine
@@ -248,10 +270,16 @@ return (
 - [ ] Pass a theme override to match the SPA's brand palette. Keep
       the teal calendar icon unless the customer explicitly rebrands
       it — recognition value.
-- [ ] Verify `todayLabel` reads sensibly in the chip when `value === ""`.
-      Core4 uses "Today"; TheoTrade uses `MM/DD/YYYY` fmt of today.
-- [ ] Smoke: opening the picker with no `availableDates` shows every
-      date `<= maxDate` clickable (graceful degrade path).
+- [ ] `todayLabel` reads the LOADED snapshot's date, not `todayIso()`
+      (§4.5 invariant #2). Pass `data.asOf` (or whatever your store
+      calls the loaded snapshot's date) formatted MM/DD/YYYY when
+      `value === ""`. Core4 uses "Today" only because Core4 is a live
+      strategy dashboard where "today" always has data; end-of-day
+      scanners (oxc-rrg, TheoTrade, etc.) MUST show the actual date.
+- [ ] `availableDates` is populated from the backend's `/dates`
+      endpoint (§4). Do NOT ship without it — per §4.5 invariant #1,
+      the graceful-degrade "every date ≤ today clickable" mode is for
+      dev smoke only and MUST NOT reach a customer.
 - [ ] Smoke: opening it with `availableDates` shows the current month
       with correct greys; last-populated day is highlighted with the
       accent outline when it IS today.
