@@ -226,6 +226,17 @@ Rules:
   useMemo for a `fetch(...).then(setAvailableDates)` on mount. Delete
   the holidays constant.
 
+**Gotcha (Mike IT-F2-360 cid b8d31a6c 2026-09-23):** the interval id
+in the minute-tick effect MUST live in a closure variable
+(`let ivId: number | undefined`), NOT stashed as a property on the
+`setTimeout` return value. Browsers return a primitive `number`
+from `setTimeout`/`setInterval` and property assignment throws
+`TypeError: can't assign to property "iv" on 1: not an object`,
+which crashes the useEffect and takes the picker down with it.
+Works in Node.js (Timeout is an object) — dies on every browser.
+The reference snippet above uses the closure pattern; copy it
+verbatim.
+
 ---
 
 ## 5. State machine
