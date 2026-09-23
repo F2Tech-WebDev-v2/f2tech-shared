@@ -152,9 +152,10 @@ Mike IT-F2-360 c/91a0942f 2026-09-23 (during oxc-rrg picker rollout):
    clickable" mode from §7 is fine for a single dev smoke, but MUST NOT
    ship to a customer — it lets the user pick an empty date and stare
    at the empty state. If the SPA's backend hasn't opened `/dates` yet,
-   either (a) block the picker mount until it does, or (b) fall back
-   to a hardcoded list scoped to the pipeline's known start date. See
-   §8 checklist.
+   fall back to a client-side trading-day whitelist (see §4.6). Do NOT
+   just disable the picker — Mike c/d189bf90 same session: "don't block
+   the date picker, just don't allow specific dates to be picked that
+   don't have data to support them."
 
 2. **Chip displays the loaded snapshot's date, not "today".** This is
    an end-of-day scanner pattern — the server rolls back to the most
@@ -164,6 +165,66 @@ Mike IT-F2-360 c/91a0942f 2026-09-23 (during oxc-rrg picker rollout):
    server actually returned, not `todayIso()`. Pass the loaded
    snapshot's own date (usually `data.asOf` or equivalent) as
    `todayLabel` when `value === ""`.
+
+### 4.6 Client-side trading-day whitelist (fallback until `/dates` lands)
+
+Mike c/d189bf90 2026-09-23: when the backend `/dates` endpoint isn't
+available yet, compute `availableDates` client-side from the pipeline
+start date up through today, excluding weekends and US market
+holidays. Cache "dirty at the top of the minute" so today's date
+becomes clickable the moment the clock rolls over.
+
+Reference implementation lives in oxc-rrg's `RealScanner.tsx` — the
+`availableDates` `useMemo` keyed on a `minuteTick` state that
+increments via a `setTimeout` aligned to the next minute boundary
+then `setInterval(bump, 60_000)`.
+
+Shape:
+
+```typescript
+const [minuteTick, setMinuteTick] = useState(0);
+useEffect(() => {
+  const bump = () => setMinuteTick((v) => v + 1);
+  const now = new Date();
+  const msToNextMinute = 60_000 - (now.getSeconds() * 1000 + now.getMilliseconds());
+  const t = window.setTimeout(() => {
+    bump();
+    const iv = window.setInterval(bump, 60_000);
+    // stash iv on the timeout handle for cleanup
+    (t as unknown as { iv?: number }).iv = iv;
+  }, msToNextMinute);
+  return () => { /* clear both */ };
+}, []);
+
+const availableDates = useMemo(() => {
+  const HOLIDAYS = new Set(["2026-01-01", /* ... NYSE calendar ... */]);
+  const out: string[] = [];
+  for (
+    let d = new Date(`${PIPELINE_START}T12:00`);
+    d.getTime() <= todayNoon();
+    d.setDate(d.getDate() + 1)
+  ) {
+    if (d.getDay() === 0 || d.getDay() === 6) continue; // Sat/Sun
+    const iso = isoOf(d);
+    if (HOLIDAYS.has(iso)) continue;
+    out.push(iso);
+  }
+  return out;
+}, [minuteTick]);
+```
+
+Rules:
+
+- **PIPELINE_START** is the earliest date the SPA's producer wrote to
+  Mongo. Ask the backend lane — hardcode; won't change often.
+- **HOLIDAYS** is the NYSE calendar for the current + next year.
+  Extend annually.
+- **Recompute cadence**: at the top of every minute. Simpler cadences
+  (daily / on-focus) miss the rollover to a new trading day mid-
+  session; sub-minute is unnecessary since dates change once a day.
+- **Retire this** as soon as backend adds `/dates` per §4 — swap the
+  useMemo for a `fetch(...).then(setAvailableDates)` on mount. Delete
+  the holidays constant.
 
 ---
 
