@@ -1,13 +1,17 @@
 # Scanner Data Wiring Recipe
 
 Canonical recipe for **connecting a scanner SPA to real per-day database
-data + purging built-in / placeholder data**. Written after the Core4
-iteration exposed every trap between "mockup rendering static rows" and
-"live rows driven by the producer's schema, adapter, quintiles, and
-joins" — so the next scanner doesn't repeat the cycle.
+data + purging built-in / placeholder data**. Distilled from the traps
+between "mockup rendering static rows" and "live rows driven by the
+producer's schema, adapter, quintiles, and joins" — so the next
+scanner doesn't repeat the cycle.
 
-Scope is deliberately generic. Substitute your scanner's names for the
-Core4-specific pieces called out in fenced examples.
+Scope is deliberately generic. Substitute your scanner's collection
+prefix, field names, and slice labels in every fenced example — none
+of them are load-bearing outside the pattern they demonstrate. The
+reference-implementation pointers in §10 name a specific existing
+scanner so a reader can go read live code, but the recipe body should
+apply to any per-day scanner.
 
 Companion recipes in this folder:
 
@@ -57,8 +61,8 @@ Joinable child collections use a composite `_id` embedding the join
 keys, e.g.:
 
 ```
-Core4_Options _id:  <symbol>_<signal_entry_date>_<tier>
-Core4_Alerts  _id:  <symbol>_<signal_entry_date>_<algo>
+<Primary>_Options _id:  <symbol>_<entry_date>_<tier>
+<Primary>_Alerts  _id:  <symbol>_<entry_date>_<kind>
 ```
 
 Never parse this format with a greedy regex — split on the first `_`
@@ -76,11 +80,11 @@ adapter as a comment block):
 
 | Producer field | Adapter output | Notes |
 |---|---|---|
-| `symbol` | `symbol` | Direct passthrough |
-| `direction` | `signal` | `"LONG"` → `"Buy"`, `"SHORT"` → `"Sell"`; enforce even if producer sends other casings |
-| `pattern_detail` | `candle` | Long-form string; SPA extracts the short candle name (Hammer / Engulfing) |
-| `most_recent_price` | `last` | EOD close |
-| `signal_close_date` | `scan_date` | ISO YYYY-MM-DD |
+| `<producer_name_1>` | `<spa_field_1>` | Direct pass-through / rename / unit conversion / enum re-label — spell out which |
+| `<producer_direction>` | `<spa_signal>` | If the producer emits an enum ("LONG"/"SHORT" or similar) and the SPA renders a friendlier label, do the swap here |
+| `<producer_long_form>` | `<spa_short_form>` | Long descriptive strings often need a short display extract |
+| `<producer_price>` | `<spa_price>` | Which price field (last close, mark, mid) and how it's timestamped |
+| `<producer_date>` | `<spa_date>` | ISO YYYY-MM-DD; document which date semantically (signal date vs entry date vs close date) |
 | ... | ... | ... |
 
 Every non-trivial mapping (hardcoded per-row constants, unit
@@ -138,7 +142,7 @@ values) is computed **per-batch** on the adapter — never hardcoded in
 the SPA and never persisted to the producer.
 
 Rationale: the shape of the day's cohort shifts. Yesterday's `p60`
-breakpoint for `to_target_pct` is not today's. If you hardcode
+breakpoint for a ranking metric is not today's. If you hardcode
 breakpoints or shift the compute to the SPA, you get wrong buckets on
 smaller / larger snapshot days.
 
@@ -167,17 +171,18 @@ Values that aren't finite return `null` — the SPA renders a
 
 ### 3.2 Cohort filter for the bucket
 
-Some metrics only make sense on a subset of rows (e.g. "Potential"
-only for ACTIVE rows). The cohort filter goes on the adapter side:
+Some metrics only make sense on a subset of rows (e.g. a metric that's
+only defined for ACTIVE rows). The cohort filter goes on the adapter
+side:
 
 ```js
-const activeTargets = rows
-  .filter((r) => r.status === "ACTIVE" && Number.isFinite(r.to_target_pct))
-  .map((r) => r.to_target_pct);
-const potentialBreaks = computeQuintileBreakpoints(activeTargets);
+const activeSamples = rows
+  .filter((r) => r.status === "ACTIVE" && Number.isFinite(r.rankingMetric))
+  .map((r) => r.rankingMetric);
+const breaks = computeQuintileBreakpoints(activeSamples);
 // ... per row:
-potential: isActive
-  ? quintileBucket(row.to_target_pct, potentialBreaks)
+bucket: isActive
+  ? quintileBucket(row.rankingMetric, breaks)
   : null,   // non-ACTIVE rows deliberately null
 ```
 
@@ -193,27 +198,28 @@ are pulled once per batch and joined per row. Two common shapes:
 ### 4.1 Composite-id keyed join
 
 ```js
-async function loadOptionsByKey(database) {
-  const map = new Map();  // key: `${symbol}|${date}` → { conservative, moderate, aggressive }
-  const opts = database.collection("Core4_Options");
-  const schemaDoc = await opts.findOne({ _id: "__schema__" });
+async function loadRelatedByKey(database, collectionName) {
+  const map = new Map();  // key: `${symbol}|${date}` → { <slice1>, <slice2>, <slice3> }
+  const coll = database.collection(collectionName);
+  const schemaDoc = await coll.findOne({ _id: "__schema__" });
   const schemaMap = buildSchemaMap(schemaDoc);
-  const rows = await opts.find(
+  const rows = await coll.find(
     { _id: { $ne: "__schema__" } },
     { projection: { _id: 1 } }
   ).toArray();
   const idParts = [];
   for (const r of rows) {
-    const m = String(r._id).match(/^([A-Za-z0-9._-]+)_(\d{4}-\d{2}-\d{2})_(low|med|high)$/i);
-    if (m) idParts.push({ id: r._id, symbol: m[1], date: m[2], tier: m[3].toLowerCase() });
+    // <symbol>_<YYYY-MM-DD>_<slice> — adjust the regex to your producer's shape.
+    const m = String(r._id).match(/^([A-Za-z0-9._-]+)_(\d{4}-\d{2}-\d{2})_([A-Za-z0-9]+)$/i);
+    if (m) idParts.push({ id: r._id, symbol: m[1], date: m[2], slice: m[3].toLowerCase() });
   }
   const ids = idParts.map((p) => p.id);
-  const fullRows = await opts.find({ _id: { $in: ids } }).toArray();
+  const fullRows = await coll.find({ _id: { $in: ids } }).toArray();
   const byId = new Map(fullRows.map((r) => [r._id, remapKeys(r, schemaMap)]));
   for (const p of idParts) {
     const key = `${p.symbol}|${p.date}`;
     let bucket = map.get(key) ?? {};
-    bucket[p.tier] = byId.get(p.id);
+    bucket[p.slice] = byId.get(p.id);
     map.set(key, bucket);
   }
   return map;
@@ -227,10 +233,10 @@ keys need.
 ### 4.2 Symbol-keyed grouping
 
 ```js
-async function loadAlertsBySymbol(database, logger) {
+async function loadRelatedBySymbol(database, collectionName, kindLabel, logger) {
   const map = new Map();
   try {
-    const coll = database.collection("Core4_Alerts");
+    const coll = database.collection(collectionName);
     const schemaMap = buildSchemaMap(await coll.findOne({ _id: "__schema__" }));
     const rows = await coll.find({ _id: { $ne: "__schema__" } }).toArray();
     for (const raw of rows) {
@@ -241,13 +247,13 @@ async function loadAlertsBySymbol(database, logger) {
         if (idx > 0) symbol = r._id.slice(0, idx).toUpperCase();
       }
       if (!symbol) continue;
-      const entry = map.get(symbol) ?? { alert_ids: [], docs: [] };
-      entry.alert_ids.push("algo_alert");
+      const entry = map.get(symbol) ?? { kinds: [], docs: [] };
+      entry.kinds.push(kindLabel);
       entry.docs.push({ ...r, symbol });
       map.set(symbol, entry);
     }
   } catch { /* collection may not exist on older dbs */ }
-  logger?.info({ mapSize: map.size, /* … */ }, "loadAlertsBySymbol result");
+  logger?.info({ collectionName, mapSize: map.size }, "loadRelatedBySymbol result");
   return map;
 }
 ```
@@ -266,9 +272,9 @@ the response line:
                      partialJoinRows: 107, noJoinRows: 68, … }
 ```
 
-Mike caught the reverse (100% join hit for the wrong reason —
-hardcoded fallback) more than once on Core4. Explicit `null` for a
-missed join is better than a synthesized dummy.
+A join rate of 100% "for the wrong reason" (a hardcoded fallback
+silently synthesizing rows the join missed) is a common regression.
+Explicit `null` for a missed join is better than a synthesized dummy.
 
 ---
 
@@ -320,8 +326,8 @@ sees yesterday's rows still on screen.
 
 ## 7. Purging built-in / placeholder data
 
-The single largest source of iteration on Core4 was hardcoded mock
-data lingering behind fallback branches. Purge in this order:
+Hardcoded mock data lingering behind fallback branches is the single
+largest source of iteration on any new scanner. Purge in this order:
 
 ### 7.1 Static row arrays
 
@@ -331,16 +337,16 @@ They will get accidentally re-imported later.
 
 ### 7.2 Hardcoded constants that leak into per-row logic
 
-The Core4 "medium always starred" bug came from a `MOCK_META.recoTier`
-constant that survived the mockup phase and was still consulted by
-the grid's star gate. Every hardcoded default like this must go —
-the SPA reads real per-row flags from the adapter output.
+Common example: a "X always highlighted" bug where a `MOCK_META.<key>`
+constant survives the mockup phase and is still consulted by the
+grid's star / highlight gate. Every hardcoded default like this must
+go — the SPA reads real per-row flags from the adapter output.
 
 Grep aggressively:
 
 ```
 grep -rE "MOCK_|SAMPLE_|PLACEHOLDER_|DEMO_|FAKE_|STATIC_" src/
-grep -rE "recoTier|defaultTier|hardcoded|HARDCODED" src/
+grep -rE "defaultTier|recoTier|hardcoded|HARDCODED" src/
 ```
 
 ### 7.3 Fallback-to-mock branches
@@ -380,10 +386,11 @@ ship it as a prioritized fallback, then remove.
 
 ---
 
-## 8. Gotchas caught during the Core4 iteration
+## 8. Gotchas caught during past scanner rollouts
 
-Each of these cost at least one round-trip with Mike or a peer agent.
-Learn them here so your scanner doesn't re-earn them.
+Each of these has cost at least one round-trip with the customer or a
+peer lane on prior scanners. Learn them here so your rollout doesn't
+re-earn them.
 
 ### 8.1 The `__schema__` step is not optional
 
@@ -404,12 +411,15 @@ picks it. Grid renders empty. See §5 for the fix.
 ### 8.3 Greedy regex on composite `_id` fields
 
 ```js
-// WRONG — greedy, matches "STZ_2026-07-09" as the "symbol"
-const m = _id.match(/^([A-Z][A-Z0-9._-]*)_/);
+// WRONG — greedy, matches "ABC_2026-07-09" as the "symbol" because
+// `_` is in the char class and the trailing `_` matches the second
+// underscore before "algo".
+// Given _id = "ABC_2026-07-09_algo"
+const m = _id.match(/^([A-Z][A-Z0-9._-]*)_/);   // group 1 = "ABC_2026-07-09"
 
 // RIGHT — split on FIRST underscore
-const idx = _id.indexOf("_");
-const symbol = _id.slice(0, idx);
+const idx = _id.indexOf("_");                    // 3
+const symbol = _id.slice(0, idx);                // "ABC"
 ```
 
 If your join key includes dashes or dots in the leading token
@@ -418,11 +428,12 @@ Never let `_` back into the char class.
 
 ### 8.4 Per-tier / per-slice flags MUST come from producer
 
-Star flags, recommended-tier flags, alert-bucket flags — all live on
-the producer's fields (`meets_reco_gate`, `is_recommended`,
-`alert_kind`). SPA reads per-row; a row can have 0 / 1 / 2 / … stars
-depending on the flag. Do NOT hardcode "the medium tier is always
-starred" or "the first row is always alertable".
+Star flags, recommended-slice flags, alert-bucket flags — all live on
+the producer's per-slice boolean fields. The SPA reads per-row; a row
+can have 0 / 1 / 2 / … stars depending on the flag. Do NOT hardcode
+"the middle slice is always starred" or "the first row is always
+alertable". These end up as "why does every row look identical"
+regressions on customer smoke.
 
 ### 8.5 Loading vs empty state confusion
 
@@ -488,8 +499,9 @@ SPA:
       constants (§7.2).
 - [ ] `fetchState` machine (§6) with distinct loading / empty / error
       renders.
-- [ ] Per-row star / meter values come from real fields
-      (`meets_reco_gate`, `potential`, `intensity`) — not hardcoded.
+- [ ] Per-row star / meter values come from real producer-emitted
+      fields (per-slice boolean flags, quintile bucket integers) —
+      not hardcoded per-row constants.
 - [ ] No fallback-to-mock branches (§7.3).
 - [ ] Empty-state text names the date + suggests the network-tab
       debug path so users can self-service.
@@ -500,8 +512,7 @@ Producer contract (get from data lane before you write the adapter):
 - [ ] `__schema__` singleton confirmed present on primary + related
       collections.
 - [ ] `_id` format for related collections documented.
-- [ ] Per-tier / per-slice flags emitted where relevant
-      (`meets_reco_gate`, `is_recommended`, etc.).
+- [ ] Per-tier / per-slice boolean flags emitted where relevant.
 - [ ] Rollout day communicated so the SPA can plan its "kill the
       hardcoded fallback" ship.
 
