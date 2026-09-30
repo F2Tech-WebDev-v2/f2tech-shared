@@ -656,6 +656,174 @@ popup, three triggers.
 If you need to customize a piece (different modal styling, different
 URL host, no mint-sid), read on. Otherwise §12.0 is enough.
 
+### 12.0.1 Complete working App.tsx skeleton (copy-paste starting point)
+
+Adopters keep reporting "recipe still empty" — usually because
+fragments across §12.1-§12.6 don't glue together obviously. This
+skeleton is the smallest working App that renders the chip, banner,
+popup, and coin all wired to one hook. Copy it, add your product-
+specific bits (main content, other menus), and the Live/Delayed
+plumbing is done.
+
+```tsx
+import { useEffect, useState } from "react";
+import { DataTierChip } from "f2tech-shared/data-tier-chip";
+import { ExchangeAgreementsBanner } from "f2tech-shared/exchange-agreements-banner";
+import { SessionDisplacedBanner } from "f2tech-shared/session-displaced-banner";
+import { useExchangeAgreementsPopup } from "f2tech-shared/exchange-agreements-popup";
+import { guardedFetch } from "./api/httpClient";   // your SPA's authed-fetch
+
+const AGREEMENT_CUSTOMER = "your-slug";            // matches f2-admin-service2 customer key
+
+type DataTier =
+  | "realtime" | "delayed_by_agreement" | "delayed_pro_gate"
+  | "delayed_displaced" | "denied" | null;
+type ReviewStatus = "pending" | "approved" | "declined" | null;
+type BannerFromBackend = { visible: boolean; label: string; message: string; kind: string | null } | null;
+
+export default function App() {
+  // ============================================================
+  // §2 Load-order contract: EVERY state that shapes chip/banner
+  // visibility MUST initialize to a falsy/null value so nothing
+  // renders until the probe returns.
+  // ============================================================
+  const [dataTier, setDataTier] = useState<DataTier>(null);
+  const [reviewStatus, setReviewStatus] = useState<ReviewStatus>(null);
+  const [reviewReason, setReviewReason] = useState<string | null>(null);
+  const [displaced, setDisplaced] = useState(false);
+  const [isPro, setIsPro] = useState(false);
+  const [bannerVisible, setBannerVisible] = useState(false);
+  const [bannerFromBackend, setBannerFromBackend] = useState<BannerFromBackend>(null);
+  const [meEmail, setMeEmail] = useState<string | null>(null);
+  const [meFirst, setMeFirst] = useState<string | null>(null);
+  const [meLast,  setMeLast]  = useState<string | null>(null);
+
+  // ============================================================
+  // §12 Popup hook — bundles mint-sid + URL construction + iframe.
+  // Same `openAgreements` reference is passed to banner interceptor,
+  // account menu, AND DataTierChip below.
+  // ============================================================
+  const { openAgreements, popupNode } = useExchangeAgreementsPopup({
+    customerSlug: AGREEMENT_CUSTOMER,
+    identity: { email: meEmail, first: meFirst, last: meLast },
+    guardedFetch,
+  });
+
+  // ============================================================
+  // §2.1 Fire the probe FIRST — before any scanner-data fetch.
+  // No `await` before probeAgreements(). Identity runs in parallel.
+  // ============================================================
+  useEffect(() => {
+    let cancelled = false;
+    const probeAgreements = async () => { /* … see §3.4 … */ };
+    const probeMe         = async () => { /* … GET /rest/api/me … */ };
+
+    probeAgreements();                 // ← FIRST
+    probeMe();                         // ← parallel, no await
+    // Only NOW start scanner-data:
+    // fetchLatestSignals();
+
+    // §3.4 re-probe triggers (focus / poll / BroadcastChannel / WS)
+    const onFocus = () => probeAgreements();
+    window.addEventListener("focus", onFocus);
+    const pollTimer = window.setInterval(probeAgreements, 60_000);
+    // … BroadcastChannel + socket.io setup per §7, §8 …
+
+    return () => {
+      cancelled = true;
+      window.removeEventListener("focus", onFocus);
+      window.clearInterval(pollTimer);
+    };
+  }, []);   // ← [] deps: mount-only. Non-empty deps push probe late.
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", height: "100vh" }}>
+      {/* 1. Popup — mount ONCE, anywhere. Content is null until
+             openAgreements() flips it visible. */}
+      {popupNode}
+
+      {/* 2. SessionDisplaced banner — rendered first so it wins if
+             the user is displaced (banner below is guarded off). */}
+      <SessionDisplacedBanner
+        visible={displaced}
+        onReclaim={() => {
+          try { sessionStorage.removeItem("f2_session_id"); } catch { /* ignore */ }
+          window.location.reload();
+        }}
+      />
+
+      {/* 3. ExchangeAgreements banner — wrapped in onClickCapture
+             so the built-in CTA link opens the popup INSTEAD of
+             navigating to admin.f2-tech.ai. */}
+      <div onClickCapture={(e) => {
+        const el = e.target as HTMLElement;
+        if (el && el.closest("a")) {
+          e.preventDefault();
+          e.stopPropagation();
+          openAgreements();
+        }
+      }}>
+        <ExchangeAgreementsBanner
+          visible={
+            bannerFromBackend
+              ? bannerFromBackend.visible
+              : (bannerVisible
+                 && !displaced
+                 && dataTier !== "delayed_pro_gate"
+                 && dataTier !== "delayed_displaced"
+                 && reviewStatus !== "approved")
+          }
+          dismissible
+          dismissKey={`${AGREEMENT_CUSTOMER}:${bannerFromBackend?.kind ?? reviewStatus ?? "none"}`}
+          label={bannerFromBackend?.label ?? "DELAYED DATA MODE"}
+          message={bannerFromBackend?.message ?? "Data is delayed 15 minutes. Fill out Exchange Agreement to access realtime data."}
+          agreementUrl={`https://members.f2-tech.ai/${AGREEMENT_CUSTOMER}/data-agreements`}
+        />
+      </div>
+
+      {/* 4. Header row with chip + coin. `openAgreements` is the
+             SAME REFERENCE the banner interceptor uses above. */}
+      <header style={{ display: "flex", justifyContent: "space-between", padding: "8px 12px" }}>
+        <DataTierChip
+          dataTier={dataTier}
+          reviewStatus={reviewStatus}
+          displaced={displaced}
+          isPro={isPro}
+          isDelayed={bannerVisible}
+          onAgreementsClick={openAgreements}
+        />
+        {/* Your account menu / coin passes the same handler: */}
+        {/* <TopMenu onAgreementsClick={openAgreements} … /> */}
+      </header>
+
+      {/* 5. Your product's main content below. */}
+      <main style={{ flex: 1, overflow: "auto" }}>{/* … */}</main>
+    </div>
+  );
+}
+```
+
+**vercel.json must include (§11.7):**
+
+```jsonc
+{
+  "rewrites": [
+    { "source": "/rest/auth/:path*", "destination": "https://f2-admin-service2.f2-tech.ai/rest/auth/:path*" },
+    { "source": "/rest/:path*",      "destination": "https://f2-admin-service2.f2-tech.ai/rest/:path*" }
+  ]
+}
+```
+
+Without the `/rest/*` rewrite, the mint-sid POST 404s, the hook
+falls back to identity-only URL, and the iframe shows blank content
+even though the shell renders. This is the #1 cause of the
+"popup still empty" report.
+
+**If the skeleton is complete and you still see empty content:**
+walk the §12.0 Empty-iframe canary — Network-tab diagnostics for
+mint-sid 404 vs 401 vs 200-but-blank-iframe map to specific
+prereqs.
+
 
 ### 12.1 Customer-slug plumbing
 
