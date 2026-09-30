@@ -910,6 +910,16 @@ Debug: copy the iframe URL and open in a new tab. Or right-click
 the iframe → "Inspect" → look at the `<iframe>` element's Network
 tab.
 
+- **Iframe request never fires at all** (Network tab has no entry
+  for the iframe URL after popup opens; mint-sid succeeded but the
+  browser made zero follow-up requests to the iframe host) → the
+  iframe was mounted without a `src` attribute. React binds
+  `<iframe src={...}>` from a plain string, but **Angular strips
+  a plain-string `[src]` binding** on iframes via its built-in
+  sanitizer. Angular adopters MUST wrap the URL with
+  `DomSanitizer.bypassSecurityTrustResourceUrl()` and bind the
+  `SafeResourceUrl` result. See §12.5.1.
+
 - **Branded host returns the Live Data pill + agreements table** →
   success. If popup body is still blank, check for a CSS z-index
   issue on the iframe (should be visible above the shell).
@@ -1178,6 +1188,65 @@ for adopters using the older stub URL shape):
 { "source": "/data-agreements/:path*", "destination": "https://admin.f2-tech.ai/data-agreements/:path*" }
 ```
 
+#### 12.5.1 Angular adopters — iframe `[src]` needs `SafeResourceUrl`
+
+**This is a load-bearing footgun for Angular adopters.** React's
+`<iframe src={popupUrl}>` accepts a plain string. Angular's
+`<iframe [src]="popupUrl">` **does not**. Angular's built-in URL
+sanitizer treats any plain-string `[src]` binding on an iframe as an
+unsafe cross-origin resource and **silently strips it** — the iframe
+is mounted with **no `src` attribute at all**. Symptom is identical
+to Step 4's "empty iframe" branch of §12.0.2: the popup opens, the
+modal chrome renders, but there is no network request to the members
+host and the iframe body is blank. Network tab shows mint-sid 200 +
+sid returned, but **zero** subsequent requests to `members.f2-tech.ai`
+— the smoking gun is "iframe never fired".
+
+Fix: wrap the URL with `DomSanitizer.bypassSecurityTrustResourceUrl()`
+and bind the resulting `SafeResourceUrl` (not the raw string) to
+`[src]`. Do it in the `url` setter so a re-open with a fresh sid
+rebuilds the safe URL.
+
+```typescript
+import { DomSanitizer, SafeResourceUrl } from '@angular/platform-browser';
+
+@Component({
+  selector: 'f2-exchange-agreements-iframe-popup',
+  template: `
+    <div *ngIf="visible" class="scrim" (click)="onScrimClick($event)">
+      <div class="modal">
+        <iframe *ngIf="safeUrl" [src]="safeUrl" title="Exchange Agreements"></iframe>
+      </div>
+    </div>
+  `,
+})
+export class ExchangeAgreementsIframePopupComponent {
+  @Input() visible = false;
+
+  @Input() set url(v: string) {
+    // Plain string [src] is sanitized to empty — MUST use bypass here.
+    this._safeUrl = v ? this._sanitizer.bypassSecurityTrustResourceUrl(v) : null;
+  }
+
+  private _safeUrl: SafeResourceUrl | null = null;
+  get safeUrl(): SafeResourceUrl | null { return this._safeUrl; }
+
+  constructor(private _sanitizer: DomSanitizer) {}
+}
+```
+
+The bypass is safe here because the URL is built by our own
+`buildAgreementUrl()` (canonical `members.f2-tech.ai/<slug>/data-agreements`
+or same-origin `/data-agreements`) — never a user-controlled string.
+Never call `bypassSecurityTrustResourceUrl` on a URL any user or
+external system could influence.
+
+Reference implementation: option-pit (Angular 17) —
+`src/app/@shared/exchange-agreements-iframe-popup.component.ts`
+shipped in commit `66519dd`, IT-F2-432 comment `1230043a` traces the
+symptom (mint-sid 200 + sid but zero iframe requests in the HAR) to
+this exact trap.
+
 ### 12.6 Account menu / coin — "View exchange agreements" item
 
 Every place that renders an account menu (top-right coin, drawer,
@@ -1242,6 +1311,15 @@ from §1's rendering description alone.
   consuming the pre-2026-09-30 stub of `ExchangeAgreementsPopup`.
   Upgrade `f2tech-shared` and switch to
   `useExchangeAgreementsPopup` per §12.0.
+- **Angular: popup opens but iframe is blank; HAR shows mint-sid 200
+  with a sid but ZERO requests to `members.f2-tech.ai`** — Angular's
+  `<iframe [src]="url">` binding silently sanitizes plain-string
+  URLs to empty, so the iframe mounts with no `src`. Wrap the URL
+  with `DomSanitizer.bypassSecurityTrustResourceUrl()` and bind the
+  resulting `SafeResourceUrl` instead. See §12.5.1 for the full
+  Angular pattern. This is the load-bearing Angular footgun — every
+  Angular adopter will hit it if they lift the React iframe snippet
+  from §12.5 verbatim.
 - **Chip doesn't render right away** (blank space where the chip
   should be for several seconds after mount) — expected during the
   sanitize probe roundtrip (§2 load-order contract: chip is null
