@@ -484,12 +484,297 @@ bar on the customer-branded host end-to-end.
 
 ---
 
-## 12. Origin
+## 12. SPA wire-up — banner render, popup, account menu
+
+The §1 rendering description tells you *what* the three UI elements
+look like. This section is *how* to wire them into your SPA — every
+piece another adopter needs to make Live/Delayed actually work
+end-to-end. All examples lifted from the Core4 reference implementation
+(`t3-core4-frontend/src/App.tsx`).
+
+### 12.1 Customer-slug plumbing
+
+One constant used in **three** places. Slug must match your product's
+`customer` key in `f2-admin-service2`.
+
+```ts
+const AGREEMENT_CUSTOMER = "t3";   // ← your product slug
+```
+
+Consumed by:
+
+1. Sanitize probe URL — `?customer=<slug>` query param (§3.1).
+2. Popup URL path segment — `https://members.f2-tech.ai/<slug>/data-agreements` (§12.4).
+3. Banner dismiss key — `${AGREEMENT_CUSTOMER}:${kind ?? reviewStatus}`
+   so a stale dismissed state from one customer doesn't suppress
+   another customer's banner if a user logs into both.
+
+### 12.2 Rendering the ExchangeAgreements banner
+
+The banner is a shared component from `f2tech-shared`. Backend PR #178
+now derives `data.banner` on the sanitize probe (`{visible, label,
+message, kind}`); prefer that when present, fall back to the local
+switch for older probe responses.
+
+**Critical: wrap the banner in a click-interceptor.** The banner's
+built-in CTA link points at `agreementUrl` (a real
+`members.f2-tech.ai/<slug>/data-agreements` URL). If the user clicks
+that raw link, the browser navigates out to a different origin
+(`members.f2-tech.ai` vs the branded scanner host), which bounces the
+user through non-customer-branded Cognito login and breaks the
+end-to-end branded experience. Mike 2026-09-15 c/8e1d3753 called this
+out. Intercept every anchor click inside the banner and route it to
+your in-app popup instead.
+
+```tsx
+import { ExchangeAgreementsBanner } from "f2tech-shared/exchange-agreements-banner";
+
+const agreementUrl = buildAgreementUrl(meEmail, meFirst, meLast);
+                    // members.f2-tech.ai/<slug>/data-agreements?email=&first=&last=
+
+<div
+  onClickCapture={(e) => {
+    const el = e.target as HTMLElement;
+    if (el && el.closest("a")) {
+      e.preventDefault();
+      e.stopPropagation();
+      openAgreements();   // opens the in-app iframe popup instead
+    }
+  }}
+>
+  <ExchangeAgreementsBanner
+    visible={
+      bannerFromBackend
+        ? bannerFromBackend.visible
+        : (bannerVisible
+           && !displaced
+           && dataTier !== "delayed_pro_gate"
+           && dataTier !== "delayed_displaced"
+           && reviewStatus !== "approved")
+    }
+    dismissible
+    dismissKey={`${AGREEMENT_CUSTOMER}:${bannerFromBackend?.kind ?? reviewStatus ?? "none"}`}
+    label={ bannerFromBackend?.label ?? /* fallback per §1.2 */ }
+    message={ bannerFromBackend?.message ?? /* fallback per §1.2 */ }
+    agreementUrl={agreementUrl}
+  />
+</div>
+```
+
+Visibility guards on the local-fallback branch (all must hold):
+
+- `bannerVisible` (set true when the sanitize probe returned non-live).
+- Not `displaced` (the SessionDisplaced banner takes over).
+- Not `delayed_pro_gate` (Pro-gate has its own copy, no CTA banner).
+- Not `delayed_displaced` (see displaced).
+- Not `reviewStatus === "approved"` (they're approved, don't nag).
+
+Skipping any of these guards is the #1 "why is my banner showing when
+it shouldn't" ticket.
+
+### 12.3 Building the popup URL (customer-slug filtered)
+
+The popup shows the Exchange Agreements form scoped to a single
+customer. The URL segment tells `members.f2-tech.ai` which product's
+form + branding to serve.
+
+```ts
+function buildAgreementUrl(
+  email: string | null, first: string | null, last: string | null
+): string {
+  const p = new URLSearchParams();
+  if (email) p.set("email", email);
+  if (first) p.set("first", first);
+  if (last)  p.set("last", last);
+  const qs = p.toString();
+  return `https://members.f2-tech.ai/${AGREEMENT_CUSTOMER}/data-agreements${qs ? "?" + qs : ""}`;
+}
+```
+
+URL shape history (all deprecated except the current one — use the
+current form, do NOT copy the older shapes from any older docs):
+
+- `admin.f2-tech.ai/data-agreements?customer=<slug>` — original,
+  killed by Firefox 3rd-party cookie block on iframe.
+- `members.f2-tech.ai/data-agreements?customer=<slug>` — replaced
+  because `?customer` is easier to lose on middleware rewrites and
+  doesn't reach the branded-domain logic path.
+- `members.f2-tech.ai/<slug>/data-agreements` ← **current**, from
+  `f2-session` PR #42 (2026-09-15). Slug resolves from path segment
+  first, then falls back to `getBrandByHost()` on customer-branded
+  domains.
+
+Email / first / last query params pre-fill the "who are you?"
+identity step. `members.f2-tech.ai` cannot re-fetch this itself when
+loaded in a 3rd-party iframe (Firefox strict tracking protection kills
+its own /me cookies). Pass what your scanner already has from
+`/rest/api/me`.
+
+### 12.4 The `openAgreements()` mint-sid + popup flow
+
+Two-step: mint a session id from the scanner's cookies, hand it to the
+popup URL. If the mint fails (401 / stale token), fall through to the
+bare identity-only URL so the popup still opens with a login CTA
+rather than blank.
+
+```ts
+const buildPopupParams = (sid?: string) => {
+  const p = new URLSearchParams();
+  if (sid) p.set("sid", sid);
+  if (meEmail) p.set("email", meEmail);
+  if (meFirst) p.set("first", meFirst);
+  if (meLast) p.set("last", meLast);
+  const qs = p.toString();
+  return qs ? `?${qs}` : "";
+};
+
+const openAgreements = async () => {
+  const bare = `https://members.f2-tech.ai/${AGREEMENT_CUSTOMER}/data-agreements`;
+  try {
+    // guardedFetch (not raw fetch) — a stale scanner id_token triggers
+    // /rest/auth/refresh + retry before mint-sid runs. Without this,
+    // an hour-old scanner session 401s on mint, we fall through to
+    // the bare URL, members has nothing to redeem, and any authed
+    // action inside the iframe 401s downstream (Mike HAR 2026-09-15
+    // c/245e0bc1 — "no access cookie" on send-code, "no refresh
+    // cookie" on /api/refresh — members had never received a redeem
+    // call because our sid never got minted).
+    const r = await guardedFetch("/rest/auth/mint-sid-from-cookies", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    });
+    if (r.ok) {
+      const body = await r.json();
+      if (body?.sid) {
+        setPopupUrl(`${bare}${buildPopupParams(body.sid)}`);
+        setPopupVisible(true);
+        return;
+      }
+    }
+  } catch { /* fall through */ }
+  setPopupUrl(`${bare}${buildPopupParams()}`);
+  setPopupVisible(true);
+};
+```
+
+### 12.5 The iframe popup mount
+
+**Why an iframe** (not a new tab or full navigation): the URL bar
+must stay on the branded scanner host end-to-end. Full-page navigation
+to `members.f2-tech.ai` shows the wrong host in the address bar and
+loses branding. Iframe keeps the URL bar on `scanners.<brand>.dev`
+throughout.
+
+```tsx
+{popupVisible && (
+  <div
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="ea-iframe-title"
+    className="fixed inset-0 z-[10001] bg-black/70 flex items-center justify-center p-4"
+    onClick={(e) => { if (e.target === e.currentTarget) setPopupVisible(false); }}
+  >
+    <div className="bg-white dark:bg-slate-900 rounded-lg shadow-2xl w-full max-w-[1100px] h-[85vh] flex flex-col overflow-hidden">
+      <div className="flex items-center justify-between px-4 py-2.5 border-b bg-slate-50 dark:bg-slate-800">
+        <h2 id="ea-iframe-title" className="text-[14px] font-semibold">Exchange Agreements</h2>
+        <button type="button" onClick={() => setPopupVisible(false)} aria-label="Close">Close</button>
+      </div>
+      <iframe src={popupUrl} title="Exchange Agreements" className="flex-1 w-full border-0" />
+    </div>
+  </div>
+)}
+```
+
+State two variables:
+
+```ts
+const [popupVisible, setPopupVisible] = useState(false);
+const [popupUrl, setPopupUrl] = useState("");
+```
+
+The `popupUrl` set by `openAgreements()` is the absolute
+`members.f2-tech.ai/<slug>/data-agreements?sid=&email=&first=&last=`
+URL. The scanner window's URL bar stays on the branded host because
+only the iframe navigates — the outer window doesn't change location.
+
+Vercel rewrite for legacy `/data-agreements` same-origin paths (kept
+for adopters using the older stub URL shape):
+
+```jsonc
+{ "source": "/data-agreements",        "destination": "https://admin.f2-tech.ai/data-agreements" },
+{ "source": "/data-agreements/:path*", "destination": "https://admin.f2-tech.ai/data-agreements/:path*" }
+```
+
+### 12.6 Account menu / coin — "View exchange agreements" item
+
+Every place that renders an account menu (top-right coin, drawer,
+whatever) passes `onAgreementsClick={openAgreements}` so its "View
+exchange agreements" (or similar) item calls the same popup opener.
+Also pass it to the DataTierChip so clicking the chip opens the
+popup:
+
+```tsx
+<TopMenu
+  theme={theme}
+  setTheme={setTheme}
+  onNavigate={onNavigate}
+  onAgreementsClick={openAgreements}      // ← coin menu wire-up
+  email={meEmail} firstName={meFirst} lastName={meLast}
+/>
+
+<DataTierChip
+  dataTier={dataTier}
+  reviewStatus={reviewStatus}
+  displaced={displaced}
+  isPro={isPro}
+  isDelayed={bannerVisible}
+  onAgreementsClick={openAgreements}      // ← chip click wire-up
+/>
+```
+
+If your account menu component doesn't already have an
+`onAgreementsClick` prop, add one and render a "View exchange
+agreements" item that calls it. The Core4 `TopMenu` at
+`t3-core4-frontend/src/shared/TopMenu.tsx` is the reference.
+
+### 12.7 Common gaps other adopters hit
+
+Traced from Mike IT-F2-391 c/26aa77c0 report ("adopter followed the
+recipe, banner didn't render, coin didn't open the popup, popup
+didn't filter to customer slug"). Every item below is a specific gap
+that isn't obvious from §1's rendering description alone.
+
+- **Banner not rendered at all** — check the visibility guards in
+  §12.2. Most common: the SPA sets `bannerVisible` from the probe
+  but never checks `!displaced`, so a displaced user sees BOTH
+  banners stacked, then dismisses ExchangeAgreements which stays
+  dismissed and hides the CTA even after `!displaced` becomes true.
+- **Coin "View exchange agreements" doesn't open the popup** —
+  `onAgreementsClick` wasn't passed to the menu. See §12.6.
+- **Popup opens but shows the wrong customer (no filter)** — the
+  URL is missing the `/<slug>/` path segment. Check `AGREEMENT_CUSTOMER`
+  is threaded through `openAgreements()` and `buildAgreementUrl()`
+  (§12.1, §12.3).
+- **Popup opens but 401s on send-code / any authed action** — the
+  mint-sid step failed silently. The bare-URL fallback opens the
+  popup but members has no sid to redeem. Verify `guardedFetch`
+  refreshes the scanner id_token before mint. See §12.4.
+- **Banner CTA link opens a new tab instead of the in-app popup** —
+  missing `onClickCapture` interceptor. See §12.2.
+- **Popup renders "unknown user" or asks for identity again** —
+  `email` / `first` / `last` query params weren't threaded from
+  `/rest/api/me`. See §12.4.
+
+---
+
+## 13. Origin
 
 Filed at Mike's request:
 
 - IT-F2-391 comment `37f96bac-5f20-4185-b3d9-b929878c5970` — full recipe.
 - IT-F2-391 comment `49f92c26-8d76-4283-8598-cff3ca19c952` — services + endpoints section (§11).
+- IT-F2-391 comment `26aa77c0-4650-486f-8268-dbefd7b018b9` — SPA wire-up section (§12), covering banner render + popup + account-menu wire gaps another adopter hit trying to follow the earlier version.
 
 > Take everything you learned about how to make a scanner handle
 > live/delayed data exchange agreements/displacement live websockets
@@ -500,3 +785,10 @@ Filed at Mike's request:
 > …
 > Did you detail the common services and endpoints used in that .md
 > as well?
+> …
+> I had another spa agent use your LIVE_DATA_SCANNER_RECIPE.md and it
+> fell short. There's no banner at the top, it doesn't bring up the
+> same exchange agreement page filtered for the customer slug, the
+> exchange agreement on the account coin doesn't work either. Can you
+> update that file with how you learned during this work — those
+> should since it doesn't have your evolution knowledge.
