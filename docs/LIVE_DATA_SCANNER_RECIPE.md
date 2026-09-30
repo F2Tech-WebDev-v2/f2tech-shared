@@ -72,6 +72,27 @@ Click "Reclaim" → clears session_id and reloads.
 Data" while the sanitize probe is in flight. Same rule for the banner —
 render nothing until the probe has landed.
 
+**Consumer-side rule that follows from this:** initialize your
+`dataTier` state to `null` (NOT to `"realtime"` or any other truthy
+value). The shared `DataTierChip` component returns `null` when its
+prop is `null`, so a null initial state → nothing visible → probe
+completes → real value rendered. Initializing to `"realtime"` will
+render a Live chip on first paint and flash to the correct state
+after the probe roundtrip — a specific violation of this contract
+that has surfaced on multiple adopter smokes (Mike c/7fb410f0
+"the delayed/real time chip doesn't showup right away" report).
+
+```tsx
+// ✅ Correct
+const [dataTier, setDataTier] = useState<DataTier>(null);
+
+// ❌ Wrong — flashes Live until probe completes
+const [dataTier, setDataTier] = useState<DataTier>("realtime");
+```
+
+Same rule for `bannerVisible` (init `false` — the probe will set it
+true if needed) and every other `data.banner`-derived state.
+
 ---
 
 ## 3. Sanitize-probe protocol
@@ -506,6 +527,18 @@ end-to-end. All examples lifted from the Core4 reference implementation
 
 ### 12.0 One-import pattern (recommended)
 
+> **Wrong-popup canary.** If clicking your banner or coin opens a
+> small centered white modal that says "Real-Time Market Data" with
+> a green "View Agreements" button that opens the form in a new tab,
+> you're consuming the pre-2026-09-30 stub version of
+> `ExchangeAgreementsPopup`. The correct popup is a dark full-height
+> iframe modal titled "Exchange Agreements" that renders the
+> per-customer form INLINE (no new tab). Fix: upgrade your
+> `f2tech-shared` dependency past 2026-09-30 and switch to the hook
+> below — do NOT import `ExchangeAgreementsPopup` alone; use
+> `useExchangeAgreementsPopup` so URL construction + mint-sid +
+> modal mount all match Core4's reference behavior.
+
 ```tsx
 import {
   useExchangeAgreementsPopup,
@@ -799,10 +832,9 @@ agreements" item that calls it. The Core4 `TopMenu` at
 
 ### 12.7 Common gaps other adopters hit
 
-Traced from Mike IT-F2-391 c/26aa77c0 report ("adopter followed the
-recipe, banner didn't render, coin didn't open the popup, popup
-didn't filter to customer slug"). Every item below is a specific gap
-that isn't obvious from §1's rendering description alone.
+Traced from Mike's IT-F2-391 adopter reports (c/26aa77c0, c/0e07f80b,
+c/7fb410f0). Every item below is a specific gap that isn't obvious
+from §1's rendering description alone.
 
 - **Banner not rendered at all** — check the visibility guards in
   §12.2. Most common: the SPA sets `bannerVisible` from the probe
@@ -824,6 +856,25 @@ that isn't obvious from §1's rendering description alone.
 - **Popup renders "unknown user" or asks for identity again** —
   `email` / `first` / `last` query params weren't threaded from
   `/rest/api/me`. See §12.4.
+- **Popup is the wrong shape** (small white centered modal saying
+  "Real-Time Market Data" with a "View Agreements" button that opens
+  a new tab instead of the branded iframe form) — the SPA is
+  consuming the pre-2026-09-30 stub of `ExchangeAgreementsPopup`.
+  Upgrade `f2tech-shared` and switch to
+  `useExchangeAgreementsPopup` per §12.0.
+- **Chip doesn't render right away** (blank space where the chip
+  should be for several seconds after mount) — expected during the
+  sanitize probe roundtrip (§2 load-order contract: chip is null
+  until `data_tier` arrives). If the wait is longer than ~500ms:
+  check `/rest/user/data-agreements?sanitize=1` latency in the
+  Network tab. If the chip flashes as Live for a split-second then
+  switches to delayed: your SPA is initializing `dataTier` to
+  `"realtime"` instead of `null` — set the initial state to `null`
+  so the chip stays hidden until the real value arrives.
+- **Chip renders and then disappears after probe completes** — the
+  SPA initialized `dataTier` to a truthy default and the real probe
+  returned `null` / `denied`. Same fix as above: initial state MUST
+  be `null`.
 
 ---
 
@@ -834,6 +885,7 @@ Filed at Mike's request:
 - IT-F2-391 comment `37f96bac-5f20-4185-b3d9-b929878c5970` — full recipe.
 - IT-F2-391 comment `49f92c26-8d76-4283-8598-cff3ca19c952` — services + endpoints section (§11).
 - IT-F2-391 comment `26aa77c0-4650-486f-8268-dbefd7b018b9` — SPA wire-up section (§12), covering banner render + popup + account-menu wire gaps another adopter hit trying to follow the earlier version.
+- IT-F2-391 comments `0e07f80b-b99d-459a-ade7-4ffde2addf57` + `7fb410f0-0b57-451b-8066-b48c94f4edf9` — the `useExchangeAgreementsPopup` hook + §12.0 fast path + the wrong-popup canary + the "chip doesn't render right away" troubleshoot entry.
 
 > Take everything you learned about how to make a scanner handle
 > live/delayed data exchange agreements/displacement live websockets
