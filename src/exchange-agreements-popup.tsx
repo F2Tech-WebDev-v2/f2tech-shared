@@ -80,9 +80,18 @@ export function ExchangeAgreementsPopup({
             Close
           </button>
         </div>
-        <iframe src={url} title={ariaLabel}
-          style={{ flex: 1, width: "100%", border: 0 }}
-        />
+        {url ? (
+          <iframe src={url} title={ariaLabel}
+            style={{ flex: 1, width: "100%", border: 0 }}
+          />
+        ) : (
+          <div style={{
+            flex: 1, display: "flex", alignItems: "center", justifyContent: "center",
+            padding: 24, textAlign: "center", color: "#98a2b0", fontSize: 13,
+          }}>
+            Preparing Exchange Agreements form…
+          </div>
+        )}
       </div>
     </div>
   );

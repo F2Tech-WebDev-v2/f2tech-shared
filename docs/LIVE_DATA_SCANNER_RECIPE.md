@@ -539,6 +539,33 @@ end-to-end. All examples lifted from the Core4 reference implementation
 > `useExchangeAgreementsPopup` so URL construction + mint-sid +
 > modal mount all match Core4's reference behavior.
 
+> **Empty-iframe canary.** If the popup shell opens (dark bar,
+> "Exchange Agreements" title, Close button) but the iframe body is
+> blank / white / a members login page, one of three prerequisites
+> is missing:
+>
+> 1. **`/rest/auth/mint-sid-from-cookies` isn't reachable** — the
+>    scanner's `vercel.json` must proxy `/rest/*` to
+>    `f2-admin-service2.f2-tech.ai/rest/*`. Without this the mint
+>    step 404s, the hook falls back to the identity-only URL, and
+>    `members.f2-tech.ai` can't authenticate the iframe embed. Check
+>    the Network tab for the mint POST — it should be 200 with
+>    `{ sid: "…" }`.
+> 2. **`guardedFetch` isn't wired** — if your SPA uses raw `fetch`,
+>    a stale scanner `f2_id` cookie 401s the mint POST silently.
+>    Import your local `httpClient.ts` `guardedFetch` (or write the
+>    minimal wrapper — see §12.4) and pass it to the hook.
+> 3. **Members doesn't have this customer's form** — every product
+>    slug needs a per-customer Exchange Agreements form set up in
+>    `f2-admin-service2`. If the mint POST returns 200 AND the URL
+>    is `https://members.f2-tech.ai/<slug>/data-agreements?sid=…`
+>    but the iframe is still blank, load the URL directly in a new
+>    tab: if you see "Customer not found" or a bare login page,
+>    file a fleet ticket to add `<slug>` to members' config.
+>
+> Symptoms map: 404 in Network on mint → prereq 1. 401 in Network
+> on mint → prereq 2. Both green but iframe still blank → prereq 3.
+
 ```tsx
 import {
   useExchangeAgreementsPopup,
