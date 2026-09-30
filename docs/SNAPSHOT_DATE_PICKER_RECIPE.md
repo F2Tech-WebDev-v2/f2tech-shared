@@ -382,12 +382,29 @@ async onScanDateChange(next: string) {
 
 **Gotchas the Angular port keeps biting:**
 
+- **`*ngFor` needs `trackBy` + a cached array, NOT a function call.**
+  If your template does `*ngFor="let c of cells()"` where `cells()`
+  returns a new Cell[] per invocation, Angular re-creates every day
+  `<button>` on every CD cycle. Between mousedown and click the DOM
+  button under the user's cursor is destroyed — the click fires on
+  nothing and pick() never runs. **Cache the cells in a property**
+  (rebuilt only when cursor / value / availableDates change) AND
+  key the ngFor with `trackBy` on `c.iso`. Bit option-pit
+  IT-F2-432 5e4adf3 for ~30 minutes before diagnosis — Mike:
+  "WTF? I still can't click on the 29th". Reference impl:
+  option-pit `src/app/@shared/snapshot-date-picker.component.ts`.
+- **Skip `event.stopPropagation()` in the picker's click handlers.**
+  It stops Angular's zone from re-entering to process the emit's
+  downstream side effects, and nothing in the picker's tree needs
+  it. `preventDefault()` on a `type="button"` also does nothing
+  useful. Just drop both.
+- **Don't use `ChangeDetectionStrategy.OnPush`.** Default CD is
+  safer here — the picker's state is small enough that the perf
+  cost is negligible, and OnPush + click events + @Output emit has
+  edge cases that silently swallow emits under certain CD timing.
 - `@Output() change = new EventEmitter<string>()` — Angular routes
   parent's `(change)="..."` to your custom @Output, NOT the native
   `change` DOM event. Naming it `change` is fine.
-- `ChangeDetectionStrategy.OnPush` on the picker is safe — click
-  events on the component's own DOM trigger CD. Parent's default CD
-  processes the emitted event as normal.
 - Handler MUST refetch. Setting the parent's `scan_date` state alone
   doesn't reload the grid — Angular's `[rowData]` binding on
   AG-Grid re-renders only when the row array reference changes, and
