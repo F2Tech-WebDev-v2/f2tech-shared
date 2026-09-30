@@ -93,6 +93,52 @@ const [dataTier, setDataTier] = useState<DataTier>("realtime");
 Same rule for `bannerVisible` (init `false` — the probe will set it
 true if needed) and every other `data.banner`-derived state.
 
+### 2.1 Fire the probe FIRST, before any other data fetch
+
+The chip is invisible until `data_tier` arrives. So the perceived
+"time to chip" is entirely the sanitize probe's roundtrip. If the
+probe fires late — after your scanner-data fetches — the chip appears
+long after the rest of the UI, which looks broken to users (Mike
+IT-F2-391 c/1cbacfeb: "the live/delayed chip [doesn't] load first").
+
+**Prescription:** the sanitize probe MUST be the FIRST authenticated
+fetch on mount. Don't await your rows / signals / options / alerts
+before starting it. Concretely:
+
+```tsx
+useEffect(() => {
+  // Fire the probe IMMEDIATELY — no `await` before this call.
+  probeAgreements();           // ← §3.4 trigger 1: mount
+  probeMe();                   // identity (parallel is fine)
+  // Only THEN kick off scanner-data fetches:
+  fetchLatestSignals();
+}, []);
+```
+
+Common anti-patterns that push chip render late:
+
+- **Awaiting identity before probing agreements** — `await probeMe();
+  then probeAgreements();` doubles the perceived chip latency. Fire
+  both in parallel; neither depends on the other.
+- **Gating probe on user-triggered action** — probe should be
+  unconditional on mount, not deferred until the user clicks a
+  header button.
+- **Wrapping the probe in a `useEffect` that depends on other state**
+  — the probe useEffect should have `[]` deps so it fires on the
+  first render, not after some other state has settled.
+- **Rendering the chip inside a lazy-loaded route** — the chip
+  should render at the App root, not deep inside a page that hasn't
+  been mounted yet.
+- **Slow probe endpoint** — if your `/rest/user/data-agreements?sanitize=1`
+  routinely takes > 500 ms, the chip WILL feel late. Check
+  f2-admin-service2's Redis cache warmth for that user; a cold cache
+  read from Cognito can take 1-2 s. Warm-cache probes should return
+  < 100 ms.
+
+Verify in DevTools: filter Network by `data-agreements`, sort by
+Time. The probe should be one of the first ~3 requests on mount
+(after the SPA bundle itself + any auth handshakes).
+
 ---
 
 ## 3. Sanitize-probe protocol
@@ -913,6 +959,7 @@ Filed at Mike's request:
 - IT-F2-391 comment `49f92c26-8d76-4283-8598-cff3ca19c952` — services + endpoints section (§11).
 - IT-F2-391 comment `26aa77c0-4650-486f-8268-dbefd7b018b9` — SPA wire-up section (§12), covering banner render + popup + account-menu wire gaps another adopter hit trying to follow the earlier version.
 - IT-F2-391 comments `0e07f80b-b99d-459a-ade7-4ffde2addf57` + `7fb410f0-0b57-451b-8066-b48c94f4edf9` — the `useExchangeAgreementsPopup` hook + §12.0 fast path + the wrong-popup canary + the "chip doesn't render right away" troubleshoot entry.
+- IT-F2-391 comments `1750fccb-56e0-4882-996f-a4ab4c5a538f` + `1cbacfeb-03de-4f06-9223-ee7d371ab84f` — §12.0 empty-iframe canary (three prereqs mapped to Network-tab signatures) + §2.1 fire-probe-first prescription with five anti-patterns.
 
 > Take everything you learned about how to make a scanner handle
 > live/delayed data exchange agreements/displacement live websockets
