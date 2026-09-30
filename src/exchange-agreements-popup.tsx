@@ -112,8 +112,11 @@ export interface AgreementsIdentity {
 
 export interface UseExchangeAgreementsPopupOptions {
   /**
-   * Customer slug for the URL path segment — matches your product's
-   * `customer` key in f2-admin-service2. E.g. "t3", "trendlabs", "mta".
+   * Customer slug for the URL. Only used when `useBrandedHost` is
+   * false (i.e. loading the popup against `members.f2-tech.ai/<slug>/…`
+   * directly). On a branded host (default), the slug isn't needed in
+   * the URL — the branded host itself identifies the customer via
+   * f2-members middleware.
    */
   customerSlug: string;
   /** Identity pre-fill. Optional; the popup opens without it too. */
@@ -127,7 +130,22 @@ export interface UseExchangeAgreementsPopupOptions {
    * either way.
    */
   guardedFetch?: (url: string, init?: RequestInit) => Promise<Response>;
-  /** Override the members host (default `https://members.f2-tech.ai`). */
+  /**
+   * When true (default), the iframe src is a same-origin relative URL
+   * (`/data-agreements?…`) so it loads under the SPA's branded host.
+   * f2-members Edge Middleware routes that path to the customer-
+   * branded DataAgreements page, keeping cookies same-origin and the
+   * URL bar on the branded scanner host end-to-end.
+   *
+   * When false, the iframe src is the absolute members URL
+   * (`https://members.f2-tech.ai/<slug>/data-agreements?…`). Use only
+   * for SPAs NOT hosted behind f2-members' branded routing.
+   */
+  useBrandedHost?: boolean;
+  /**
+   * Override the members host (only consulted when `useBrandedHost`
+   * is false). Default `https://members.f2-tech.ai`.
+   */
   membersOrigin?: string;
 }
 
@@ -178,6 +196,7 @@ export function useExchangeAgreementsPopup(
     customerSlug,
     identity,
     guardedFetch,
+    useBrandedHost = true,
     membersOrigin = "https://members.f2-tech.ai",
   } = opts;
 
@@ -195,7 +214,15 @@ export function useExchangeAgreementsPopup(
   }, [identity?.email, identity?.first, identity?.last]);
 
   const openAgreements = useCallback(async () => {
-    const bare = `${membersOrigin}/${customerSlug}/data-agreements`;
+    // Branded-host default: iframe src is a same-origin relative URL.
+    // The SPA's branded host is served by f2-members Edge Middleware,
+    // which renders the customer-branded DataAgreements page at
+    // /data-agreements on the same host. Cookies flow same-origin and
+    // the URL bar stays on the branded scanner host throughout.
+    // Non-branded fallback: absolute members URL with slug in path.
+    const bare = useBrandedHost
+      ? "/data-agreements"
+      : `${membersOrigin}/${customerSlug}/data-agreements`;
     const doFetch = guardedFetch ?? ((u: string, init?: RequestInit) => fetch(u, init));
     try {
       // Mint a session id from the scanner's cookies. guardedFetch
@@ -220,7 +247,7 @@ export function useExchangeAgreementsPopup(
     } catch { /* fall through to identity-only URL */ }
     setUrl(`${bare}${buildParams()}`);
     setVisible(true);
-  }, [customerSlug, membersOrigin, guardedFetch, buildParams]);
+  }, [customerSlug, membersOrigin, useBrandedHost, guardedFetch, buildParams]);
 
   const close = useCallback(() => setVisible(false), []);
 

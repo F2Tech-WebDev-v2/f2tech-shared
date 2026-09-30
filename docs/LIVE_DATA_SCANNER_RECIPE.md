@@ -573,6 +573,21 @@ end-to-end. All examples lifted from the Core4 reference implementation
 
 ### 12.0 One-import pattern (recommended)
 
+> **Iframe target = the customer-branded domain, NOT `members.f2-tech.ai`.**
+> The popup iframe src is a **same-origin relative URL** (`/data-agreements`)
+> so it loads under your scanner's branded host (e.g.
+> `scanners.core4.dev/data-agreements`). f2-members Edge Middleware
+> serves the customer-branded DataAgreements page at that path,
+> keeping cookies same-origin and the URL bar on the branded host
+> end-to-end. **Do NOT point the iframe at the absolute
+> `https://members.f2-tech.ai/<slug>/data-agreements` URL** — that
+> loads the members generic host, cookies become 3rd-party (Firefox
+> ITP kills them), and the page can't authenticate the user.
+>
+> `useExchangeAgreementsPopup` defaults to the branded-host relative
+> URL. Only pass `useBrandedHost: false` if your SPA is NOT hosted
+> behind f2-members' branded routing (rare).
+
 > **Wrong-popup canary.** If clicking your banner or coin opens a
 > small centered white modal that says "Real-Time Market Data" with
 > a green "View Agreements" button that opens the form in a new tab,
@@ -865,38 +880,58 @@ DevTools Network → filter "mint-sid" → click the row → Headers tab
   `<button onClick={(e) => { e.preventDefault(); }}>` without calling
   the handler).
 
-**Step 3 — Hook sets popup URL to
-`https://members.f2-tech.ai/<slug>/data-agreements?sid=<sid>&email=&first=&last=`.**
-Debug: add `console.log(url)` inside `setUrl(...)` in the hook (or
-inspect the iframe's `src` attribute in Elements). Verify:
+**Step 3 — Hook sets popup URL.**
+With the default `useBrandedHost: true`, the URL is a same-origin
+relative path: `/data-agreements?sid=<sid>&email=&first=&last=`.
+Debug: inspect the iframe's `src` attribute in DevTools Elements
+tab — it should NOT start with `https://members.f2-tech.ai`. If you
+see the absolute members URL, either you passed
+`useBrandedHost: false` or you're on a pre-2026-09-30 version of
+the hook that hadn't yet switched to branded-host as default.
 
-- `<slug>` is your customer key (e.g. `t3`, `oxc`). Wrong slug →
-  members returns "customer not found" or blank.
+Verify:
+
+- URL starts with `/data-agreements` (relative). If it starts with
+  `https://members.f2-tech.ai/...` the iframe will load the generic
+  members host as 3rd-party, cookies won't flow, and Firefox will
+  show a blank iframe or a login page.
 - `sid=` value looks like a JWT / opaque token (not empty).
 - `email` / `first` / `last` reflect what your `/rest/api/me` returned
   (not `undefined`).
 
-**Step 4 — Browser loads the iframe against members.**
-The iframe should show a T3-branded / customer-branded dashboard
-after ~200 ms. Debug: right-click the iframe → "Inspect" → look at
-the `<iframe>` element's Network activity, OR copy the URL and open
-in a new tab.
+**Step 4 — Browser loads the iframe against the branded host.**
+`<branded-host>/data-agreements` — f2-members Edge Middleware serves
+the customer-branded DataAgreements React page from f2-members' own
+build, resolves the customer via the branded host, and pre-fills the
+form / dashboard using the sid. Should show a T3-branded (or your
+customer's branded) dashboard after ~200 ms.
 
-- **Members returns the Live Data pill + agreements table** →
+Debug: copy the iframe URL and open in a new tab. Or right-click
+the iframe → "Inspect" → look at the `<iframe>` element's Network
+tab.
+
+- **Branded host returns the Live Data pill + agreements table** →
   success. If popup body is still blank, check for a CSS z-index
   issue on the iframe (should be visible above the shell).
-- **Members shows a login page or "Please sign in"** → sid was
-  invalid. Likely: mint returned 200 but with an empty / bad sid,
-  or the sid expired between mint and iframe load (rare, but sids
-  are short-lived).
-- **Members shows "Customer not found" or "Unknown customer"** →
-  the `<slug>` in the URL doesn't have a customer record in
-  f2-admin-service2. This is a fleet-config task, not a SPA task.
-  File a ticket to add the slug to f2-admin-service2's customer
-  registry.
-- **Members shows a blank white page (no server-rendered content)** →
-  members.f2-tech.ai itself is 500-ing. Check members' health / pm2
-  logs on the deploy target.
+- **Branded host shows a login page or "Please sign in"** → sid
+  was invalid. Likely: mint returned 200 but with an empty / bad
+  sid, or the sid expired between mint and iframe load (rare, but
+  sids are short-lived).
+- **Branded host shows "Customer not found" or "Unknown customer"** →
+  f2-members middleware couldn't resolve your branded host to a
+  customer. Verify the customer's `Customers.<slug>.vercel.branded_hosts[]`
+  entry in f2-admin-service2 includes your host, or that the host
+  is included in the customer's f2-members routing config.
+- **Branded host serves the wrong SPA's data-agreements** → f2-members'
+  branded-routing lookup returned a different customer. Check
+  `Customers.<slug>.vercel.scanner_proxy_target_urls` in
+  f2-admin-service2.
+- **Branded host shows OG image or 404** → f2-members middleware
+  didn't recognize `/data-agreements` as a members-served path on
+  the branded host. This means f2-members hasn't been updated to
+  serve `/data-agreements` on the branded host — file a fleet
+  ticket to enable branded-host `/data-agreements` routing in
+  f2-members middleware.
 
 **Step 5 — User interacts with the iframe.**
 Members submits its own network requests to admin.f2-tech.ai (via
