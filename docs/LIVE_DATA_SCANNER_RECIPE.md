@@ -399,6 +399,66 @@ Otherwise displacement pings never reach the SPA — the F2:USER_UPDATES
 belt-and-suspenders path silently drops (fixed in `f2-admin-service`
 commit `4ea2e79`).
 
+### 8.2 Live-vs-delayed data source routing
+
+**Every scanner with a delayed tier reads from PARALLEL databases,
+not the same DB with a client-side delay filter.** Live users hit
+`<PREFIX>_LIVE-{ET-date}`, delayed users hit `<PREFIX>_DLYD-{ET-date}`.
+Same collection names, same document shape — the only difference is
+which physical database Mongo reads from.
+
+| Scanner | Live DB pattern | Delayed DB pattern |
+|---|---|---|
+| Strat | `Strat_LIVE-{ET-date}` | `Strat_DLYD-{ET-date}` |
+| Option Flow (`op-flow`) | `F2_LIVE-{ET-date}` | `F2_DLYD-{ET-date}` |
+| Option Sniper (`os-flow`) | `OS_LIVE-{ET-date}` | `OS_DLYD-{ET-date}` |
+
+**Who resolves the DB name:**
+
+- **Backend (`f2-api` push-view REST snapshot)** — `resolveDbForRequest`
+  reads `request.isLive` (set by the entitlement preHandler from the
+  3-layer override) OR an explicit `?tier=delayed` query hint from the
+  SPA, then swaps `_LIVE-` → `_DLYD-` in the resolved `SourceDbPattern`
+  before running the Mongo query.
+- **Backend (`f2-api` append-view WS fanout)** — WS handshake resolves
+  entitlement, tags `socket._isDelayed = true` for delayed users.
+  Fanout path holds delivery for delayed sockets via
+  `setTimeout(sock.send, 15 * 60 * 1000)` so delayed subscribers
+  never see fresher-than-permitted trades. Live subscribers deliver
+  immediately (unchanged).
+- **SPA** — passes `tier=delayed` on both the snapshot GET and the WS
+  query string when `data_tier !== "realtime"` (belt-and-suspenders;
+  the backend also derives it from `request.isLive`, but passing it
+  explicitly future-proofs mid-session tier flips).
+
+**Do NOT:**
+
+- Block the scanner UI for delayed users (they should see delayed
+  trades, not an empty grid — Mike IT-F2-432 c/de3367eb: "don't
+  block it from using the delayed data that's already there").
+- Serve LIVE data to a delayed user with a client-side visual
+  watermark. The physical DB / fanout must be delayed — anything
+  else is an entitlement compliance violation.
+- Add a client-side 15-min buffer as a substitute for
+  `_DLYD-{ET-date}` — SPAs are untrusted for compliance. Delay
+  belongs at the fanout layer, on the server.
+
+**Adopter checklist for a new scanner:**
+
+- [ ] `F2-ADMIN.Scanners.<slug>.SourceDbPattern` is `<PREFIX>_LIVE-{ET-date}`.
+- [ ] The delayed writer publishes to `<PREFIX>_DLYD-{ET-date}` with
+      the same collection names + schemas as the live DB.
+- [ ] f2-api's `resolveDbForRequest` recognizes the `<PREFIX>_LIVE-`
+      → `<PREFIX>_DLYD-` swap. If not, add it (see reference impl in
+      `alpha-shark-flow-service/patches/f2-api-server.after.js` commit
+      `7de4f63`).
+- [ ] SPA passes `tier=delayed` on both REST snapshot + WS URL when
+      probe returns `data_tier !== "realtime"` (reference impl:
+      option-pit commit `34d8ebd`).
+- [ ] Verify (as delayed-tier user): DevTools Network → snapshot URL
+      contains `tier=delayed`, response `db:` field is
+      `<PREFIX>_DLYD-<today>`; WS URL contains `tier=delayed`.
+
 ---
 
 ## 9. Adoption checklist for a new SPA
