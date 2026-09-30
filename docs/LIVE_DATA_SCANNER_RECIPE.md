@@ -341,15 +341,18 @@ Copy this section into each fleet-adopter PR:
 - [ ] Import `DataTierChip` from `f2tech-shared/data-tier-chip`.
 - [ ] Import `ExchangeAgreementsBanner` from `f2tech-shared/exchange-agreements-banner`.
 - [ ] Import `SessionDisplacedBanner` from `f2tech-shared/session-displaced-banner`.
-- [ ] Wire the sanitize probe on mount (§3). Set an `AGREEMENT_CUSTOMER` slug for your product.
+- [ ] Import `useExchangeAgreementsPopup` from `f2tech-shared/exchange-agreements-popup` (see §12.0 for the one-import wire-up).
+- [ ] Set an `AGREEMENT_CUSTOMER` slug matching your product's key in `f2-admin-service2`. Threaded through sanitize probe, popup URL, banner dismiss key.
+- [ ] Wire the sanitize probe on mount (§3).
 - [ ] Subscribe to all four WS events (§8) via same-origin socket.io polling.
 - [ ] Wire BroadcastChannel dedup handshake (§4.1).
 - [ ] Guard the chip with the load-order contract (§2). No flash of Live Data.
 - [ ] Add the silent-refresh path with a resettable staleClaim gate (§5.1).
 - [ ] Wire the re-login modal fallback (§5.2).
-- [ ] Add the iframe modal for `/data-agreements` (vercel.json rewrite to `admin.f2-tech.ai`).
+- [ ] Wrap `<ExchangeAgreementsBanner>` in the `onClickCapture` interceptor (§12.2) so the built-in CTA link opens the popup instead of navigating out.
+- [ ] Pass the hook's `openAgreements` to your account menu / coin's `onAgreementsClick` AND to `<DataTierChip>`'s `onAgreementsClick` (§12.6). Same reference, three triggers → one popup.
 - [ ] Verify the seven chip states render with the EXACT copy in §1.1 (grep-diffable regression check).
-- [ ] Smoke: probe hits exactly once on mount; zero flash of Live Data for delayed users; displaced state reload clears session_id.
+- [ ] Smoke: probe hits exactly once on mount; zero flash of Live Data for delayed users; displaced state reload clears session_id; **clicking the banner, the coin, and the chip all open the SAME popup, and the popup URL contains `/<slug>/` (not `?customer=`)**.
 
 ---
 
@@ -358,6 +361,7 @@ Copy this section into each fleet-adopter PR:
 - **Component library (canonical):** `f2tech-shared` — this repo. See
   `src/data-tier-chip.tsx`, `src/data-tier-banner.tsx`,
   `src/session-displaced-banner.tsx`, `src/exchange-agreements-banner.tsx`,
+  `src/exchange-agreements-popup.tsx` (modal + `useExchangeAgreementsPopup` hook, §12.0),
   `src/agreements.js`.
 - **Socket.io consumer wire-up:** `alpha-pivot-frontend`
   (Core4 SPA) — `src/App.tsx`. Probe useEffect around line 200;
@@ -491,6 +495,61 @@ look like. This section is *how* to wire them into your SPA — every
 piece another adopter needs to make Live/Delayed actually work
 end-to-end. All examples lifted from the Core4 reference implementation
 (`t3-core4-frontend/src/App.tsx`).
+
+> **Fast path for new adopters:** import
+> `useExchangeAgreementsPopup` from `f2tech-shared/exchange-agreements-popup`
+> and skip §12.3, §12.4, §12.5 below — the hook bundles URL construction,
+> mint-sid flow, and iframe modal into one call. See §12.0 for the
+> one-import pattern. The subsections below are for adopters who need
+> to understand what the hook does (troubleshooting, or if you need to
+> customize a piece).
+
+### 12.0 One-import pattern (recommended)
+
+```tsx
+import {
+  useExchangeAgreementsPopup,
+} from "f2tech-shared/exchange-agreements-popup";
+import { ExchangeAgreementsBanner } from "f2tech-shared/exchange-agreements-banner";
+import { DataTierChip } from "f2tech-shared/data-tier-chip";
+import { guardedFetch } from "./api/httpClient";
+
+const AGREEMENT_CUSTOMER = "t3";   // ← your product slug
+
+function App() {
+  // ... probe state per §3, identity per §12.4 ...
+  const { openAgreements, popupNode } = useExchangeAgreementsPopup({
+    customerSlug: AGREEMENT_CUSTOMER,
+    identity: { email: meEmail, first: meFirst, last: meLast },
+    guardedFetch,
+  });
+
+  return (
+    <>
+      {popupNode}
+      <div onClickCapture={(e) => {
+        const el = e.target as HTMLElement;
+        if (el && el.closest("a")) {
+          e.preventDefault(); e.stopPropagation();
+          openAgreements();
+        }
+      }}>
+        <ExchangeAgreementsBanner ... agreementUrl={buildAgreementUrl(...)} />
+      </div>
+      <TopMenu   onAgreementsClick={openAgreements} ... />
+      <DataTierChip onAgreementsClick={openAgreements} ... />
+    </>
+  );
+}
+```
+
+That's the full pattern. Same `openAgreements` reference is passed to
+banner's click-interceptor, account menu, and DataTier chip — one
+popup, three triggers.
+
+If you need to customize a piece (different modal styling, different
+URL host, no mint-sid), read on. Otherwise §12.0 is enough.
+
 
 ### 12.1 Customer-slug plumbing
 
