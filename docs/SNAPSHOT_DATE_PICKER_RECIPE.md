@@ -279,12 +279,22 @@ call it out in your ticket and I'll extend.
 
 ## 7. Wire-up in a consumer SPA
 
+**The picker only renders a chip + popup — the SPA owns the data
+refetch.** Setting `value` doesn't do anything by itself; `onChange`
+is where you re-request rows for the picked date. Skip the `onChange`
+wire-up and the picker looks like it works (chip highlights, popup
+closes) but the grid never updates.
+
+### 7.1 React (canonical)
+
 Minimal snippet lifted from Core4's `Cockpit.tsx`:
 
 ```tsx
 const [scanDate, setScanDate] = useState<string>("");
 const [availableDates, setAvailableDates] = useState<string[]>([]);
+const [liveRows, setLiveRows] = useState<Row[]>([]);
 
+// (1) Fetch the /dates list once on mount.
 useEffect(() => {
   fetch("/api/signals/dates?days=180", { credentials: "include" })
     .then((r) => r.json())
@@ -292,13 +302,23 @@ useEffect(() => {
     .catch(() => setAvailableDates([]));
 }, []);
 
-// Re-fetch data whenever scanDate changes (or first paint when it's "")
+// (2) Re-fetch data whenever scanDate changes (empty string = "load
+//     latest / live"). THIS is what makes picking a date actually do
+//     something. Without it the chip toggles but the grid is frozen.
 useEffect(() => {
   const q = scanDate ? `?date=${scanDate}` : "";
   fetch(`/api/signals${q}`, { credentials: "include" })
     .then((r) => r.json())
     .then((rows) => setLiveRows(rows))
     .catch(() => setLiveRows([]));
+}, [scanDate]);
+
+// (3) If the SPA also has a live WS, PAUSE it while browsing history
+//     — otherwise late-arriving live trades corrupt the frozen
+//     snapshot. Resume on scanDate === "".
+useEffect(() => {
+  if (scanDate) ws.pause();
+  else ws.resume();
 }, [scanDate]);
 
 return (
@@ -308,37 +328,98 @@ return (
     availableDates={availableDates}
     ariaLabel="Scan date"
     todayLabel="Today"
-    theme={{
-      chipBg: "var(--surface2, #0e2238)",
-      chipBorder: "var(--line, #1e3c5a)",
-      chipText: "var(--txt, #e2e8f0)",
-      iconColor: "#2dd4bf",
-      popupBg: "var(--surface, #0b1830)",
-      popupBorder: "var(--line, #1e3c5a)",
-      dayText: "var(--txt2, #cbd5e1)",
-      dayDisabledText: "var(--txt3, #3f5670)",
-      accent: "var(--accent, #f97316)",
-      accentText: "#ffffff",
-      muted: "var(--txt3, #7a92ad)",
-    }}
+    theme={{ /* ... palette overrides ... */ }}
   />
 );
 ```
+
+### 7.2 Angular port
+
+The React reference isn't published as an Angular package — port the
+component to your app's `@shared/` folder (see option-pit's
+`snapshot-date-picker.component.ts` — 295 lines, single file, no
+dependencies beyond `@angular/common`). Wire-up:
+
+```typescript
+// flow.component.ts
+scan_date = '';
+available_dates: string[] = [];
+
+async ngOnInit() {
+  // (1) Fetch /dates once on mount.
+  this.flowService.getSnapshotDates().then((raw) => {
+    this.available_dates = normalizeAvailableDates(raw);
+  });
+  // ... existing snapshot + WS wire-up ...
+}
+
+// (2) THE handler that makes picking a date do something.
+async onScanDateChange(next: string) {
+  this.scan_date = next || '';
+  // Pause live WS while browsing history; resume when back on today.
+  if (this.scan_date) {
+    this.flowService.disconnect();
+  } else {
+    this.flowService.reconnect();
+  }
+  // Refetch snapshot with ?date=YYYY-MM-DD (empty = live).
+  const snap = await this.flowService.getSnapshot(500, tier, this.scan_date);
+  this.trades = (snap || []).map((raw) => this._normalize(raw));
+  this._recompute_visible();
+}
+```
+
+```html
+<!-- flow.component.html -->
+<f2-snapshot-date-picker
+  [value]="scan_date"
+  [availableDates]="available_dates"
+  ariaLabel="Scan date"
+  todayLabel="Today"
+  (change)="onScanDateChange($event)">
+</f2-snapshot-date-picker>
+```
+
+**Gotchas the Angular port keeps biting:**
+
+- `@Output() change = new EventEmitter<string>()` — Angular routes
+  parent's `(change)="..."` to your custom @Output, NOT the native
+  `change` DOM event. Naming it `change` is fine.
+- `ChangeDetectionStrategy.OnPush` on the picker is safe — click
+  events on the component's own DOM trigger CD. Parent's default CD
+  processes the emitted event as normal.
+- Handler MUST refetch. Setting the parent's `scan_date` state alone
+  doesn't reload the grid — Angular's `[rowData]` binding on
+  AG-Grid re-renders only when the row array reference changes, and
+  no reference changes until you call `getSnapshot(...date)` and
+  reassign `this.trades`.
 
 ---
 
 ## 8. Adoption checklist for a new SPA
 
 - [ ] Import `SnapshotDatePicker` + `normalizeAvailableDates` from
-      `f2tech-shared/snapshot-date-picker`.
+      `f2tech-shared/snapshot-date-picker` (React), OR port the
+      component to `@shared/` (Angular — see §7.2).
 - [ ] Add `/<rest-path>/dates` on the SPA's backend. Enumerate dated
       dbs, filter to the `days` window, drop empty dbs via a
       per-db `findOne` projection, return sorted ascending. See §4.
+      **Verify with a curl before wiring the SPA** — response should
+      be a bare array (or `{dates:[...]}` — either shape works with
+      `normalizeAvailableDates`).
 - [ ] Store `scanDate: string` (initial `""` = live) in SPA state.
 - [ ] Fetch `availableDates` on mount; run through
       `normalizeAvailableDates` before setting state.
-- [ ] Wire `onChange` to your data-loader: refetch snapshot rows
-      whenever `scanDate` changes; empty string = "load latest".
+- [ ] **Wire `onChange` to your data-loader** (§7). This is the load-
+      bearing step — the picker only manages the chip + popup. Without
+      an onChange handler that refetches rows for the picked date, the
+      chip toggles but the grid stays frozen. **If you skip this the
+      picker looks broken.**
+- [ ] If the SPA also has a live WS: pause the WS when `scanDate !== ""`
+      (frozen snapshot; late-arriving live rows corrupt history) and
+      resume when the user picks "Back to today" (`scanDate === ""`).
+      Disable any Pause/Resume UI while a historical date is loaded
+      so the user can't accidentally re-open the live stream.
 - [ ] Pass a theme override to match the SPA's brand palette. Keep
       the teal calendar icon unless the customer explicitly rebrands
       it — recognition value.
@@ -354,7 +435,9 @@ return (
       dev smoke only and MUST NOT reach a customer.
 - [ ] Smoke: opening it with `availableDates` shows the current month
       with correct greys; last-populated day is highlighted with the
-      accent outline when it IS today.
+      accent outline when it IS today. **Pick a past date — the grid
+      MUST reload with that day's snapshot.** If the grid stays on
+      today's data, your onChange handler isn't refetching (§7 (2)).
 
 ---
 
