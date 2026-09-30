@@ -824,6 +824,110 @@ walk the §12.0 Empty-iframe canary — Network-tab diagnostics for
 mint-sid 404 vs 401 vs 200-but-blank-iframe map to specific
 prereqs.
 
+### 12.0.2 End-to-end trace — how the iframe actually renders content
+
+Adopter reports of "popup is empty" keep coming. Every one has been
+a specific step in the chain below returning the wrong thing. Walk
+this trace ticking off each step; whichever step fails is where your
+SPA is stuck.
+
+The correct rendered result is a members-side dashboard with:
+"T3 Market Data Dashboard" header + "Reviewing as: <email>" +
+Live Data pill + Data Agreements table with Modify / Download
+buttons per row.
+
+If you don't see that, one of these steps failed:
+
+**Step 1 — User clicks banner / coin / chip.**
+Handler fires: `openAgreements()`. Confirm your handler is the
+`openAgreements` returned by `useExchangeAgreementsPopup`. Debug:
+`console.log("openAgreements called")` at the top of your handler.
+
+**Step 2 — Hook fires `POST /rest/auth/mint-sid-from-cookies`.**
+This is the LOAD-BEARING call. It must reach `f2-admin-service2`.
+Debug:
+
+```
+DevTools Network → filter "mint-sid" → click the row → Headers tab
+```
+
+- **Status 200 with body `{ sid: "…" }`** → move to step 3.
+- **Status 404** → your `vercel.json` is missing the `/rest/*`
+  rewrite. Add both entries from §11.7 (`/rest/auth/:path*` AND
+  `/rest/:path*`). Redeploy. Retest.
+- **Status 401** → your SPA session cookies (`f2_id`, `f2_access`)
+  are expired or missing. Verify by logging out + back in. If it
+  works fresh but 401s after a while, your SPA is using raw `fetch`
+  instead of `guardedFetch` — the latter refreshes the id_token
+  before retry.
+- **Request never fires** → the hook didn't run. Check your handler
+  isn't swallowing the click before `openAgreements` runs (e.g.
+  `<button onClick={(e) => { e.preventDefault(); }}>` without calling
+  the handler).
+
+**Step 3 — Hook sets popup URL to
+`https://members.f2-tech.ai/<slug>/data-agreements?sid=<sid>&email=&first=&last=`.**
+Debug: add `console.log(url)` inside `setUrl(...)` in the hook (or
+inspect the iframe's `src` attribute in Elements). Verify:
+
+- `<slug>` is your customer key (e.g. `t3`, `oxc`). Wrong slug →
+  members returns "customer not found" or blank.
+- `sid=` value looks like a JWT / opaque token (not empty).
+- `email` / `first` / `last` reflect what your `/rest/api/me` returned
+  (not `undefined`).
+
+**Step 4 — Browser loads the iframe against members.**
+The iframe should show a T3-branded / customer-branded dashboard
+after ~200 ms. Debug: right-click the iframe → "Inspect" → look at
+the `<iframe>` element's Network activity, OR copy the URL and open
+in a new tab.
+
+- **Members returns the Live Data pill + agreements table** →
+  success. If popup body is still blank, check for a CSS z-index
+  issue on the iframe (should be visible above the shell).
+- **Members shows a login page or "Please sign in"** → sid was
+  invalid. Likely: mint returned 200 but with an empty / bad sid,
+  or the sid expired between mint and iframe load (rare, but sids
+  are short-lived).
+- **Members shows "Customer not found" or "Unknown customer"** →
+  the `<slug>` in the URL doesn't have a customer record in
+  f2-admin-service2. This is a fleet-config task, not a SPA task.
+  File a ticket to add the slug to f2-admin-service2's customer
+  registry.
+- **Members shows a blank white page (no server-rendered content)** →
+  members.f2-tech.ai itself is 500-ing. Check members' health / pm2
+  logs on the deploy target.
+
+**Step 5 — User interacts with the iframe.**
+Members submits its own network requests to admin.f2-tech.ai (via
+its own auth). Not your SPA's concern — but if the iframe form
+submits and gets "no access cookie" errors, your sid mint used the
+wrong cookies or members' cookie-forwarding is broken. See feedback
+memory `iframe_context_needs_explicit_x_f2_header_for_setcookie_partitioned`.
+
+**Verification harness (curl-based):**
+
+```bash
+# Step 2: mint should return 200 + a sid.
+curl -sS -c /tmp/cj.txt -b /tmp/cj.txt \
+     -X POST "https://<your-spa-host>/rest/auth/mint-sid-from-cookies" \
+     -H "content-type: application/json" -d '{}' \
+     -H "Cookie: <paste your f2_id + f2_access cookies here>"
+# Expected: {"sid":"…"}
+
+# Step 4: iframe URL should return HTML (not "customer not found").
+curl -sS "https://members.f2-tech.ai/<slug>/data-agreements?sid=<sid>&email=you%40example.com&first=You&last=Test" \
+     | head -c 500
+# Expected: HTML starting with <!DOCTYPE html> including "T3 Market Data" or your customer's branding.
+```
+
+If both curls return the expected result and the SPA still shows an
+empty iframe, the failure is in the browser (CSP, X-Frame-Options,
+Vercel-level middleware). Grep the response headers on step 4's URL
+for `X-Frame-Options` and `Content-Security-Policy` — if either
+blocks iframe embedding from your SPA's origin, coordinate with
+members' owner to allow the origin.
+
 
 ### 12.1 Customer-slug plumbing
 
