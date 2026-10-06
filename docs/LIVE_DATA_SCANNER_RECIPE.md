@@ -971,35 +971,46 @@ export class AppComponent {
 
 **`useBrandedHost` guidance for Angular adopters:**
 
-- `true` (default) — iframe src is `/data-agreements?sid=…`. Requires
-  the SPA to be behind f2-members' Edge Middleware (branded routing)
-  so `/data-agreements` on the SPA's host resolves to the customer
-  form. Cookies stay same-origin.
-- `false` — iframe src is `https://members.f2-tech.ai/<slug>/data-agreements?sid=…`.
-  Use when the SPA is NOT behind f2-members branded routing. Cookies
-  become 3rd-party (Firefox ITP risk). Reference: theo-trade
-  (IT-F2-437).
+**Use the default (`useBrandedHost: true`)** — the iframe src is
+`/data-agreements?sid=…`, proxied via `vercel.json` rewrites to
+`members.f2-tech.ai/<slug>/data-agreements`. The customer-branded
+domain stays in the URL bar end-to-end, cookies stay same-origin to
+the SPA host, and the embedded members form reads them without
+3rd-party cookie restrictions. Mike directive IT-F2-437 2026-10-06:
+"when the popup for the exchange agreement comes up it should be using
+the customers branded domain".
 
-**vercel.json rewrites for Angular adopters:**
+Only drop to `useBrandedHost: false` as a diagnostic fallback — iframe
+src becomes absolute `https://members.f2-tech.ai/<slug>/data-agreements?sid=…`.
+Cookies then become 3rd-party; Firefox ITP will drop them for cold
+loads, and the embedded members form's downstream authed calls can
+401. Use only when the branded-host rewrites can't be added for a
+reason you can name.
 
-If `useBrandedHost: false`, you only need the mint-sid proxy:
+**vercel.json rewrites — required for the default branded-host mode:**
 
 ```jsonc
 {
   "rewrites": [
-    { "source": "/rest/auth/mint-sid-from-cookies", "destination": "https://f2-admin-service2.f2-tech.ai/rest/auth/mint-sid-from-cookies" }
+    { "source": "/rest/auth/mint-sid-from-cookies", "destination": "https://f2-admin-service2.f2-tech.ai/rest/auth/mint-sid-from-cookies" },
+    { "source": "/data-agreements",        "destination": "https://members.f2-tech.ai/<your-slug>/data-agreements" },
+    { "source": "/data-agreements/:path*", "destination": "https://members.f2-tech.ai/<your-slug>/data-agreements/:path*" }
   ]
 }
 ```
 
-If `useBrandedHost: true`, you also need `/data-agreements` → members
-proxied for the branded-host flow. Note: Vercel's reverse-proxy to
-`members.f2-tech.ai` serves the response from your SPA's host, so
-cookies set in that response are bound to the SPA's host (not members).
-The members backend sees the request via Vercel with its host header
-but the auth cookies for *that* host aren't present. Confirm your
-SPA is actually inside f2-members' Edge Middleware before flipping
-`useBrandedHost: true`.
+The mint-sid rewrite is required because the popup component POSTs a
+relative path (`/rest/auth/mint-sid-from-cookies`). Add if your SPA
+doesn't already proxy `/rest/*` through to `f2-admin-service2`.
+
+The `/data-agreements` rewrites route the iframe navigation to members
+server-side while keeping the branded host in the URL bar. Vercel
+reverse-proxies the response, which includes the HTML + any
+`Set-Cookie` headers from members. Those cookies get applied to the
+SPA's host (same-origin). The embedded form's subsequent calls back
+to the members backend run under the SPA's cookies — no 3rd-party
+cookie flow needed. Reference: theo-trade (IT-F2-437, cutover from
+`useBrandedHost: false` → default per Mike 2026-10-06).
 
 **Data Agreements probe service (Angular equivalent of the React
 `probeAgreements` useEffect):**
