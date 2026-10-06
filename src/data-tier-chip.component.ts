@@ -77,10 +77,10 @@ const CHIP_CSS = `
   standalone: true,
   selector: 'f2-data-tier-chip',
   imports: [CommonModule],
+  styles: [CHIP_CSS],
   template: `
     <ng-container *ngIf="shouldRender()">
       <div class="dtc-wrap">
-        <style>{{ cssText }}</style>
 
         <!-- Server-driven copy path (IT-F2-413 c/7420760c): backend ships a
              chip subdoc with variant + label + title + aria_label; we render
@@ -166,8 +166,6 @@ export class DataTierChipComponent {
    *  (variant → styling class + button copy comes from backend). */
   @Input() chip: ChipCopy | null = null;
   @Output() agreementsClick = new EventEmitter<void>();
-
-  readonly cssText = CHIP_CSS;
 
   shouldRender(): boolean {
     if (this.chip && this.chip.variant) return true;

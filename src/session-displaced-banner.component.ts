@@ -40,9 +40,9 @@ const BANNER_CSS = `
   standalone: true,
   selector: 'f2-session-displaced-banner',
   imports: [CommonModule],
+  styles: [BANNER_CSS],
   template: `
     <ng-container *ngIf="visible">
-      <style>{{ cssText }}</style>
       <div class="f2-sdb-banner"
         role="alert"
         aria-live="polite"
@@ -66,8 +66,6 @@ export class SessionDisplacedBannerComponent {
   /** Click (or Enter / Space) emits here. Canonical handler clears
    *  sessionStorage.f2_session_id then window.location.reload(). */
   @Output() reclaim = new EventEmitter<void>();
-
-  readonly cssText = BANNER_CSS;
 
   emitReclaim() { this.reclaim.emit(); }
 
