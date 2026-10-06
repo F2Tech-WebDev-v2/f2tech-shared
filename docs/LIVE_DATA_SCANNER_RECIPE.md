@@ -899,6 +899,126 @@ walk the §12.0 Empty-iframe canary — Network-tab diagnostics for
 mint-sid 404 vs 401 vs 200-but-blank-iframe map to specific
 prereqs.
 
+#### 12.0.1-A Angular equivalent — ExchangeAgreementsPopupComponent iframe mode
+
+Angular adopters: there is no React hook equivalent, but the shared
+`<f2-exchange-agreements-popup>` component (as of f2tech-shared v0.27.0,
+IT-F2-437 2026-10-06) bundles the same mint-sid + URL build + iframe
+modal into the component itself. Pass `customerSlug` to switch from the
+pre-2026-09-30 legacy stub to iframe mode.
+
+```typescript
+// app.component.ts
+import { ExchangeAgreementsPopupComponent } from 'f2tech-shared/exchange-agreements-popup.component';
+import { DataTierChipComponent } from 'f2tech-shared/data-tier-chip.component';
+import { SessionDisplacedBannerComponent } from 'f2tech-shared/session-displaced-banner.component';
+
+@Component({
+  standalone: true,
+  imports: [
+    ExchangeAgreementsPopupComponent,
+    DataTierChipComponent,
+    SessionDisplacedBannerComponent,
+    // ... your other imports
+  ],
+})
+export class AppComponent {
+  // §2 load-order contract: null/false init so nothing renders until probe.
+  dataTier: DataTier = null;
+  reviewStatus: ReviewStatus = null;
+  sessionDisplaced = false;
+
+  // Popup state — separate chip-opened flag so the probe re-emitter
+  // (focus / 60s poll) can't clobber a user-opened popup.
+  popup_ack = false;
+  show_exch_ag_popup = false;    // auto-emitter from DataAgreementsService
+  chip_opened_popup = false;     // chip-click sets this; dismiss clears both
+
+  openAgreementsFromChip() { this.popup_ack = false; this.chip_opened_popup = true; }
+  onAgreementsDismissed() { this.popup_ack = true; this.chip_opened_popup = false; }
+  onSessionReclaim() {
+    try { sessionStorage.removeItem('f2_session_id'); } catch { /* ignore */ }
+    window.location.reload();
+  }
+}
+```
+
+```html
+<!-- app.component.html -->
+<f2-session-displaced-banner
+  [visible]="sessionDisplaced"
+  (reclaim)="onSessionReclaim()">
+</f2-session-displaced-banner>
+
+<f2-data-tier-banner [mode]="dataTierMode"></f2-data-tier-banner>
+
+<!-- Chip in the header. *ngIf gates on login state (recipe §2). -->
+<f2-data-tier-chip *ngIf="authService.is_logged_in()"
+  [dataTier]="dataTier"
+  [reviewStatus]="reviewStatus"
+  (agreementsClick)="openAgreementsFromChip()">
+</f2-data-tier-chip>
+
+<!-- Popup. customerSlug switches to iframe mode. OR both visibility
+     flags so chip-click isn't clobbered by probe re-emits. -->
+<f2-exchange-agreements-popup
+  [visible]="(show_exch_ag_popup || chip_opened_popup) && !popup_ack"
+  [customerSlug]="'your-slug'"
+  [useBrandedHost]="false"
+  (dismissed)="onAgreementsDismissed()">
+</f2-exchange-agreements-popup>
+```
+
+**`useBrandedHost` guidance for Angular adopters:**
+
+- `true` (default) — iframe src is `/data-agreements?sid=…`. Requires
+  the SPA to be behind f2-members' Edge Middleware (branded routing)
+  so `/data-agreements` on the SPA's host resolves to the customer
+  form. Cookies stay same-origin.
+- `false` — iframe src is `https://members.f2-tech.ai/<slug>/data-agreements?sid=…`.
+  Use when the SPA is NOT behind f2-members branded routing. Cookies
+  become 3rd-party (Firefox ITP risk). Reference: theo-trade
+  (IT-F2-437).
+
+**vercel.json rewrites for Angular adopters:**
+
+If `useBrandedHost: false`, you only need the mint-sid proxy:
+
+```jsonc
+{
+  "rewrites": [
+    { "source": "/rest/auth/mint-sid-from-cookies", "destination": "https://f2-admin-service2.f2-tech.ai/rest/auth/mint-sid-from-cookies" }
+  ]
+}
+```
+
+If `useBrandedHost: true`, you also need `/data-agreements` → members
+proxied for the branded-host flow. Note: Vercel's reverse-proxy to
+`members.f2-tech.ai` serves the response from your SPA's host, so
+cookies set in that response are bound to the SPA's host (not members).
+The members backend sees the request via Vercel with its host header
+but the auth cookies for *that* host aren't present. Confirm your
+SPA is actually inside f2-members' Edge Middleware before flipping
+`useBrandedHost: true`.
+
+**Data Agreements probe service (Angular equivalent of the React
+`probeAgreements` useEffect):**
+
+Angular adopters use a shared service (typically `DataAgreementsService`
+in `@services/`) that:
+
+1. Fires the sanitize probe on construction (recipe §2.1 — ahead of the
+   auth handshake; `providedIn: 'root'` services bootstrap at Angular
+   startup). Deferred one tick via `setTimeout(0)` so the DI graph is
+   wired before HTTP.
+2. Re-fires on window `focus` + 60s poll (recipe §3.4 triggers 2+3).
+3. Emits a `ProbeResult` object (data_tier / review_status / pro /
+   displaced / banner subdoc) alongside the legacy boolean emitter for
+   backward compat with earlier adopters.
+
+Reference impl: theo-trade `src/app/@services/data-agreement.service.ts`
+(IT-F2-437 slice 1).
+
 ### 12.0.2 End-to-end trace — how the iframe actually renders content
 
 Adopter reports of "popup is empty" keep coming. Every one has been
