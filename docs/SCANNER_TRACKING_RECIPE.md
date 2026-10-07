@@ -387,25 +387,244 @@ fields being empty.
 
 ---
 
-## 7. Usage tracking — current state + planned shape
+## 7. Usage tracking — current state + proposed per-day roll-up
 
-### 7.0 What's recorded today vs. what isn't
+### 7.0 What's recorded today
 
 | Signal | Collection | Grain | Notes |
 |---|---|---|---|
 | Entitlement grant / revoke | `F2-ADMIN.UserTracking` | per (email, customer) with `events[]` of `add_scanner` / `remove_scanner` | Authoritative for billing. Written from `user-management.service.ts upsert_tracking` (L6772-6848). Only 2 event types in use. |
-| Login / session created | `F2-ADMIN.AuthLogins` | one doc per login (customer + date, nothing scanner-specific) | 157k+ rows; used by billing reports to attribute monthly actives. |
-| Login event with Cognito user snapshot | `F2-ADMIN.LoginEvents` | per login (user_id, customer, sub, host, user_status, enabled, user_create_date, user_last_modified_date) | 60k+ rows; richer identity snapshot but still no scanner-level breakdown. |
+| Login — minimal | `F2-ADMIN.AuthLogins` | one doc per login (customer + date, nothing scanner-specific) | 157k+ rows. |
+| Login — rich (**per scanner, per event**) | `F2-ADMIN.LoginEvents` | one doc per event with `event_type`, `scanner`, `scanners[]`, `live_data_access`, `is_pro`, `ip`, `user_agent`, `session_id`, `event_at`, `record_epoch`, `month` | **60k+ rows. Richer than it looks.** `event_type` values: `login` / `logout` / `timeout` / `displaced_by_new_session` / `displaced_by_reclaim`. `scanner` is the specific scanner the event was for. `scanners[]` is the full entitlement set at event time. `live_data_access` is a boolean (whether tier was live at event time). **This is the base layer §7a rolls up from.** Written by `auth.service.ts:865` (login path) + `live-session.service.ts:171` (displacement path). |
 | Entitlement attribute mutation (admin audit) | `F2-ADMIN.EntitlementAudit` | one doc per Cognito attribute write (changed_by + old/new attrs + reason + ip + ua) | 33 rows; audit-only, not for billing. |
-| Legacy per-scanner access history (import) | `F2-ADMIN.AuthLogins_Graphem` | per (user, scanner) with First/Last Access Date + Live Eligible + Agreement Status | 7k+ rows, historical import, not live-written. Rich shape worth mirroring for the new live tracker (§7b). |
+| Legacy per-scanner access history (import) | `F2-ADMIN.AuthLogins_Graphem` | per (user, scanner) with First/Last Access Date + Live Eligible + Agreement Status | 7k+ rows, historical import, not live-written. Shape precedent for &ldquo;max tier observed per scanner&rdquo; roll-up. |
 | Live-session slot ownership | Redis `F2:LIVE_SESSIONS_SLOT:<user>:<scanner>` + `F2:LIVE_SESSIONS_DISPLACED:<user>` | one record per user+scanner slot; TTL 60s | Serves single-window enforcement + displacement broadcast. Not persisted for retro usage. |
-| Scanner-view impression (user opened scanner X) | — | — | **Unimplemented.** |
-| Per-session tier (live vs delayed) consumed | — | — | **Unimplemented** as a dedicated row. Derivable from LiveSessionService slot history IF persisted (currently only Redis + ephemeral). |
 
-**Mike's prior framing** (IT-F2-439 c/8a9aefac): &ldquo;we already have
-some of this [information] fo the billing.&rdquo; True for *entitlement*
-+ *per-customer login counts*; false for *per-scanner view* +
-*per-session tier*. Those are the two gaps §7a + §7b fill.
+**Key correction** (vs. my prior framing on IT-F2-439 c/a0bf7875):
+`LoginEvents` already carries per-scanner + per-tier granularity.
+What's missing is the **per-day roll-up** Mike called for in
+IT-F2-439 c/509648ae: one doc per (user, ET-day) with aggregated
+logins, IPs, scanners viewed, and max tier observed per scanner.
+
+### 7a. Proposed `F2-ADMIN.UserDailyActivity` roll-up — ONE DOC PER (USER, ET-DAY)
+
+Mike c/509648ae: *&ldquo;we just really need to track one item per
+ET Time zone day the log in the details ofs times and ip address,
+and which scanner was viewed that day, and if they were viewing
+live or delayed or EOD data for each scanner they view with the
+understanding that live data supersedes delayed supersedes EOD
+data.&rdquo;* + *&ldquo;we don't want to change [existing structure]
+because there can be other systems dependant on it.&rdquo;*
+
+**Approach**: NEW collection layered ON TOP of existing LoginEvents.
+Existing collections stay untouched. UserDailyActivity is derived
+state — safe to rebuild from LoginEvents + ScannerViews (if §7b
+ships) at any point.
+
+#### 7a.1 Collection shape
+
+```
+F2-ADMIN.UserDailyActivity:
+{
+  _id: '<user_id>:<YYYY-MM-DD>',    // deterministic — one doc per (user, ET-day)
+  user_id: '<cognito-sub>',          // canonical identity
+  user_email: '<denormalized for grid joins>',
+  et_date: '2026-10-07',             // America/New_York calendar day
+  customer: 'option-pit',            // primary customer (first scanner's Client)
+
+  // Login detail — one entry per LoginEvents row observed on this day
+  logins: [
+    {
+      event_at: '2026-10-07T13:42:11.084Z',   // UTC
+      event_type: 'login',                     // login | logout | timeout | displaced_by_new_session | displaced_by_reclaim
+      ip: '74.109.182.241',
+      user_agent: 'Mozilla/5.0 ...',
+      scanner: 'op-rr',                        // the specific scanner this event was for
+      session_id: '<uuid>'                     // SPA tab's slot key — joins with LiveSessionService
+    },
+    // ... repeated per event in the day
+  ],
+
+  // Deduped set of IPs seen today
+  ips: ['74.109.182.241', '98.81.79.170'],
+
+  // Per-scanner: MAX tier observed today (live > delayed > eod)
+  scanners_viewed: {
+    'op-rr':          { max_tier: 'live',    first_seen_at: '...', last_seen_at: '...', event_count: 7  },
+    'op-fingerprints':{ max_tier: 'eod',     first_seen_at: '...', last_seen_at: '...', event_count: 2  },
+    'op-zeta':        { max_tier: 'delayed', first_seen_at: '...', last_seen_at: '...', event_count: 1  }
+  },
+
+  // Rollup metadata
+  first_event_at: '2026-10-07T13:42:11.084Z',
+  last_event_at:  '2026-10-07T20:15:33.922Z',
+  total_events: 10,
+  updated_at: '2026-10-07T20:15:35.012Z'
+}
+```
+
+**Tier precedence rule** (per Mike): `live > delayed > eod`. On each
+update, max_tier for a scanner only moves UP, never down. If the
+user viewed `op-rr` at `delayed` at 10am + `live` at 2pm, max_tier
+stays `live` for the day — even if they go back to delayed at 4pm.
+
+**EOD classification**: scanners whose data source is end-of-day
+(e.g. op-fingerprints — SIBYL EOD import) default to `eod`. Scanner-
+side tier read fallback: if the request path's data pattern is a
+static non-dated DB (per `Scanners.<id>.Stream.SourceDbPattern` not
+containing `{date}`), tier is `eod` regardless of
+`live_data_access`.
+
+#### 7a.2 Write path
+
+Fire-and-forget upsert on every LoginEvents insert. Add a one-liner
+at the two existing LoginEvents write sites:
+
+- `f2-admin-service/src/services/auth.service.ts:865` (login event
+  path) — immediately after `insertOne`, fire
+  `void this.userDailyActivityService.rollup(record)`.
+- `f2-admin-service/src/services/live-session.service.ts:171`
+  (displacement path) — same.
+
+Service method `rollup(evt)` does:
+
+```
+const et_date = DateTime.fromJSDate(evt.event_at)
+                   .setZone('America/New_York').toISODate();
+const id = `${evt.sub}:${et_date}`;
+const tier = _tierFor(evt);  // 'live' | 'delayed' | 'eod'
+
+await col.updateOne({_id: id}, {
+  $setOnInsert: { user_id: evt.sub, et_date, customer: evt.customer, first_event_at: evt.event_at },
+  $set: { user_email: evt.user_email, last_event_at: evt.event_at, updated_at: new Date() },
+  $inc: { total_events: 1 },
+  $addToSet: { ips: evt.ip },
+  $push: { logins: { event_at: evt.event_at, event_type: evt.event_type, ip: evt.ip, user_agent: evt.user_agent, scanner: evt.scanner, session_id: evt.session_id } },
+  // Scanner max-tier upsert — nested dot-path with $max for tier precedence
+  [`scanners_viewed.${evt.scanner}.max_tier`]: _tierUpsert(evt),  // helper that reads current + applies live>delayed>eod max
+  [`scanners_viewed.${evt.scanner}.last_seen_at`]: evt.event_at,
+  [`scanners_viewed.${evt.scanner}.event_count`]: $inc 1,
+  $setOnInsert: { [`scanners_viewed.${evt.scanner}.first_seen_at`]: evt.event_at }
+}, { upsert: true });
+```
+
+(Pseudocode — Mongo doesn't support `$max` with string ordering out
+of the box, so `_tierUpsert` wraps a read-current-value + conditional
+`$set` pattern. Standard precedence helper, worth sharing across
+other callers if more roll-up collections appear.)
+
+Latency budget: this is fire-and-forget via `void` — never add to
+the user-facing request path. Failure is swallowed + logged; the
+authoritative LoginEvents row still landed.
+
+#### 7a.3 Read path
+
+New admin endpoint:
+
+```
+GET /rest/admin/user-daily-activity?user_id=<sub>&from=<et-date>&to=<et-date>
+GET /rest/admin/user-daily-activity?customer=<slug>&et_date=<YYYY-MM-DD>
+GET /rest/admin/user-daily-activity?scanner=<slug>&et_date=<YYYY-MM-DD>
+```
+
+Returns the matching UserDailyActivity rows. Feeds:
+
+- Compliance audit CSV: &ldquo;who viewed scanner X on day Y + at
+  what tier&rdquo;.
+- Admin billing-report drill: &ldquo;per-day engagement for user X
+  this month&rdquo;.
+- Usage-based pricing feed (if we go there) — per-scanner-day counts.
+
+#### 7a.4 Backfill from LoginEvents history
+
+Single-pass script: iterate `LoginEvents` from oldest → newest, call
+`rollup(evt)` for each. 60k events → ~15 min. One-time job. New
+events keep rolling up incrementally after that.
+
+TTL: UserDailyActivity carries 395-day TTL (NYSE audit retention).
+Older events in LoginEvents stay for raw audit; UserDailyActivity
+provides the fast per-day summary.
+
+### 7b. Scanner view tracking — still a gap
+
+LoginEvents captures login/logout/displacement events but NOT
+tab-focus (user mounted the scanner view in their browser). Without
+a SPA-side signal, we can't distinguish:
+
+- User logged in but never opened scanner X's tab.
+- User opened scanner X's tab + sat on it for an hour.
+
+Both show up as a single `login` LoginEvents row with
+`scanner: '<default from entitlement sort>'` or similar. The
+per-scanner view-dwell data isn't captured.
+
+**Proposal** (for Mike's review before shipping):
+
+- New endpoint `POST /rest/user/scanner-views` (minimal: just
+  records a view-mount event). Writer: new slim controller on
+  f2-admin-service, standard Bearer auth.
+- SPA-side instrumentation: shared f2tech-shared hook
+  `useScannerViewTracker(scanner_id)` fires on mount +
+  visibilitychange + beforeunload with `keepalive:true`.
+- Backend writes to LoginEvents with `event_type: 'view'` (new
+  event_type) OR to a NEW `F2-ADMIN.ScannerViews` collection.
+- UserDailyActivity rollup picks up the new events via the same
+  write path, incrementing `scanners_viewed.<slug>.event_count` +
+  updating last_seen_at.
+
+**Open question for Mike** (per *&ldquo;lets review them in the
+ticket&rdquo;*): should view events go into existing LoginEvents
+(adding a new `event_type: 'view'` value) OR a NEW
+ScannerViews collection? LoginEvents keeps everything in one
+place but could 10x+ the row count. ScannerViews separates
+concerns + lets us set a shorter TTL on views (180 days vs
+LoginEvents' retention) but adds a collection to backfill +
+monitor. Flag either direction before implementing.
+
+### 7c. Open design questions for Mike's review
+
+Per *&ldquo;we don't want to change [existing] because there can
+be other systems dependant on it so if there's changes or ideas you
+have lets review them in the ticket&rdquo;* — these are REVIEW-GATED,
+not shipped:
+
+1. **UserDailyActivity write-site hook** — the rollup fires from
+   `auth.service.ts:865` + `live-session.service.ts:171`. Any
+   DOWNSTREAM reader of LoginEvents (billing reports, admin
+   dashboards, EntitlementAudit) is unaffected; this is a new
+   collection + a new `void` fire-and-forget call per event.
+   Confirm: no reader depends on LoginEvents writes being
+   synchronous (fire-and-forget means UserDailyActivity may lag
+   LoginEvents by 10-100ms on insert).
+2. **EOD tier classification** — how do we know a scanner is
+   EOD? Proposal: inspect `Scanners.<id>.Stream.SourceDbPattern`;
+   if no `{date}` placeholder (e.g. `option-pit.fingerprints`
+   static DB), tier is `eod`. Alternative: new
+   `Scanners.<id>.Stream.DataTier: 'live-only'|'live-and-delayed'|'eod-only'` field.
+   The SourceDbPattern inspection is zero-config; the explicit
+   flag is explicit. Pick one.
+3. **max_tier precedence vs. transitions** — if user viewed `live`
+   at 2pm then was `displaced → delayed` at 3pm, max_tier stays
+   `live` per the precedence rule. Is that right for the
+   compliance view, or does Mike want *last_tier_at_eod* as a
+   separate field (so audit shows both &ldquo;peak tier reached&rdquo; +
+   &ldquo;final tier at day's end&rdquo;)?
+4. **View tracking vs. login tracking** — Mike's &ldquo;scanner was
+   viewed that day&rdquo; could mean either (a) user had a tab open
+   OR (b) a login event with `scanner: X` was recorded. Login
+   events today only fire on fresh logins / displacements — a user
+   who stays on scanner X for 8 hours with no re-login would show
+   as 1 login event, not 8 hours of view. §7b fills this gap IF
+   wanted; otherwise LoginEvents-only rollup under §7a is a
+   simpler ship.
+5. **Backfill triggering** — do we backfill UserDailyActivity from
+   historical LoginEvents at deploy time, or only forward from
+   deploy day? Backfill is one-time ~15 min; forward-only means
+   historical compliance queries need to walk LoginEvents directly.
+6. **PII in logs[].user_agent + ips[]** — do we need to redact /
+   hash for GDPR? Current LoginEvents stores both plaintext; this
+   roll-up would carry the same. If there's a compliance ask to
+   redact, apply at write time via `_redactUA(ua)` + `_hashIP(ip)`.
 
 ### 7a. Live-vs-delayed usage tracking — proposed shape
 
