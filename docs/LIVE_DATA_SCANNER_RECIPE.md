@@ -1054,6 +1054,71 @@ mint-sid failure). Debug: 401 on your resolver → the id_token the
 resolver passed is expired; your SPA needs to refresh before the next
 openAgreements() call.
 
+**Angular SafeResourceUrl footgun — memoise or iframe will flash forever.**
+
+The popup component's iframe `[src]` binding needs a `SafeResourceUrl`
+(not a plain string). The natural pattern — a `trustedIframeUrl()`
+method returning `_sanitizer.bypassSecurityTrustResourceUrl(this.url)`
+— creates a FRESH `SafeResourceUrl` object every change-detection cycle.
+Angular compares `[src]` by reference, sees a different object every
+CD tick, re-navigates the iframe each time. Mike IT-F2-437 2026-10-07
+HAR captured ~80 aborted iframe GETs in 15 seconds; user-visible as
+the iframe flashing / rapidly reloading. The shared
+`ExchangeAgreementsPopupComponent` memoises in `ngOnChanges` as of
+v0.28.1 (f2tech-shared `83216fd`) — if you're writing a custom popup
+in another Angular SPA, do the same: compute the SafeResourceUrl ONCE
+when the URL field changes, cache it in a component field, bind
+`[src]` to the cached field.
+
+**End-to-end chain for the admin-approve → chip-flip <1s path.**
+
+Four moving parts, any missing one breaks the flow:
+
+1. **f2-admin-service** `review_user_data_agreement` flips Cognito
+   `custom:live_data_access` AND publishes `F2:USER_UPDATES` with
+   `{userSub, dataTier, reviewStatus}`. Watch out for per-customer
+   special-cases that suppress the Cognito flip (e.g. an old
+   `customer === 'theo-trade'` branch kept Non-Pro approvals delayed in
+   perpetuity until IT-F2-437 2026-10-07). If your probe response
+   returns `data_tier_reason: "customer_scope_gate"` for an
+   `review_status:"approved"` user, you're hitting this class of trap
+   — chase it down in `data-agreements.service.ts` before adding more
+   polling on the SPA side.
+2. **SPA companion backend** (e.g. `theo-trade-service` on
+   `theotrade-svc2.f2-tech.ai`) subscribes to Redis `F2:USER_UPDATES`
+   + `F2:LIVE_SESSIONS_UPDATES`, matches envelope `userSub` to its
+   connected sockets by `socket.data.sub`, emits
+   `entitlement_changed` / `live_access_changed` / `session_displaced`
+   / `session_reclaimed` to the matched sockets. Reference impl:
+   `theo-trade-service` commit `36f680b`
+   (`src/services/redis.service.ts` subscriber + dispatcher pattern,
+   `src/services/socketio.service.ts` fanout via `nsp.sockets.values()`
+   — NOT `clients.values()`, which is email-keyed and collides when a
+   user has multiple tabs open). authenticate_socket needs to accept
+   `channel='entitlement-events'` as a per-user stream that bypasses
+   the scanner-ids access check (Bearer auth still required).
+3. **SPA** opens the entitlement-events socket at auth-token-settled,
+   listens for the four events, triggers `probe_now()` on each.
+   Reference impl: `theo-trade` `src/app/@services/entitlement-events.service.ts`.
+   Service is injected per-component (`providers: [EntitlementEventsService]`
+   on AppComponent) rather than `providedIn:'root'` so `start()` runs
+   only after the user has an id_token.
+4. **One-shot backfill** on first deploy of the Cognito-flip fix: any
+   user with `agreement.review_status='approved' AND
+   agreement.pro_access=false AND Cognito.live_data_access=false` was
+   stuck in the pre-fix split-state and the Cognito flip never ran.
+   Query `F2-ADMIN.Exchange_Agreements` for the matching cohort and
+   run `update_user_live_access(username, true, pool_id)` once.
+   Without this, pre-existing approved users continue to probe
+   `customer_scope_gate` even after the code fix — the fix only runs
+   on NEW admin approve actions.
+
+Keep polling in the SPA as a belt-and-suspenders fallback (20s
+interval, visibilitychange + focus + chip-click triggers) so a missed
+WS fanout doesn't leave the UI stale indefinitely. The polling isn't
+the primary path — it's the recovery path when the WS chain breaks
+somewhere.
+
 **vercel.json rewrites — required for the default branded-host mode:**
 
 ```jsonc
@@ -1591,6 +1656,54 @@ from §1's rendering description alone.
   SPA initialized `dataTier` to a truthy default and the real probe
   returned `null` / `denied`. Same fix as above: initial state MUST
   be `null`.
+- **Angular popup iframe flashes / reloads constantly after open** —
+  `trustedIframeUrl()` is a method pattern that re-creates the
+  `SafeResourceUrl` object on every CD cycle. Angular compares `[src]`
+  by reference, iframe re-navigates on every tick. Memoise the
+  SafeResourceUrl in `ngOnChanges` when the underlying URL changes.
+  Shared component handles this as of f2tech-shared v0.28.1 (`83216fd`);
+  if you're writing your own popup for an Angular SPA, see §12.0.1-A
+  for the memoise pattern.
+- **Non-Pro Approved user on a specific customer stays delayed
+  forever** — probe returns `live_data_access:false` with
+  `data_tier_reason:"customer_scope_gate"` even after admin approve.
+  Root cause: a per-customer special-case in
+  `f2-admin-service/src/services/data-agreements.service.ts`
+  `review_user_data_agreement` suppressing the Cognito
+  `update_user_live_access(..., true, ...)` write. Reference removal:
+  IT-F2-437 2026-10-07 drop of the `customer === 'theo-trade'` branch
+  that gated the flip on `live_data_current` already being true
+  ("once-live-always-live, never auto-promote" — the TT special-case
+  nobody could re-justify). If you adopt the recipe for a new customer
+  and see this symptom, check the review handler for a slug match on
+  your customer and demand the justification before shipping the
+  work-around.
+- **Admin re-approve doesn't propagate to the SPA chip for a user
+  who was approved before the fix landed** — my fix affects the
+  approve action going FORWARD. Users already in the
+  approved-but-not-live split-state need a one-shot backfill — query
+  `F2-ADMIN.Exchange_Agreements` where
+  `(customer=<slug> AND review_status='approved' AND pro_access=false)`
+  and call `update_user_live_access(username, true, pool_id)` for
+  each hit whose current Cognito attr is false. Workaround for a
+  single user: re-approve them in the admin UI (re-runs
+  `review_user_data_agreement` under the new code).
+- **SPA sees `entitlement_changed` 401 at the socket.io handshake**
+  — your companion backend's `authenticate_socket` is rejecting
+  `channel='entitlement-events'` under the scanner-ids access check.
+  Add the channel as a per-user stream that bypasses the check — the
+  Bearer id_token is the only auth needed; the user is entitled to
+  listen for events about their own account regardless of which
+  scanner slugs they have. Reference impl: `theo-trade-service`
+  `src/services/socketio.service.ts` `is_entitlement_channel` branch.
+- **WS events arrive at the backend from Redis but SPA sockets don't
+  receive them** — the fanout handler is iterating a Map keyed by
+  something that collides across tabs. The `clients: Map<email,
+  Socket>` pattern overwrites when a user has multiple tabs open
+  (second tab clobbers the first) so the fanout only reaches one of
+  N tabs. Iterate `nsp.sockets.values()` instead (keyed by unique
+  socket.id). Match on `socket.data.sub` populated at
+  authenticate_socket time.
 
 ---
 
