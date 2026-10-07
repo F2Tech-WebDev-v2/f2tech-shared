@@ -123,6 +123,18 @@ export class ExchangeAgreementsPopupComponent implements OnChanges {
   /** IFRAME-MODE: optional authed-fetch wrapper (your SPA's httpClient.fetch
    *  with refresh-retry). Falls back to global `fetch` on undefined. */
   @Input() guardedFetch: ((url: string, init?: RequestInit) => Promise<Response>) | null = null;
+  /**
+   * IFRAME-MODE escape hatch for SPAs that don't use the cookie-session
+   * auth model (e.g. JWT-bearer SPAs like theo-trade). When set, the
+   * component calls this instead of its own
+   * `/rest/auth/mint-sid-from-cookies` flow — the SPA is responsible
+   * for minting the sid via whatever primitive its auth model provides
+   * (e.g. TT's /rest/auth/exchange-portal-token which takes a JWT and
+   * returns a members sid URL) and returning the full iframe URL to
+   * load. Return `null` to signal mint failure — component falls through
+   * to the identity-only URL as before. IT-F2-437 2026-10-07.
+   */
+  @Input() urlResolver: (() => Promise<string | null>) | null = null;
   /** Shell aria-label + header title text. */
   @Input() ariaLabel = 'Exchange Agreements';
 
@@ -157,6 +169,29 @@ export class ExchangeAgreementsPopupComponent implements OnChanges {
   private async _buildIframeUrl() {
     const slug = this.customerSlug;
     if (!slug) return;
+
+    // Escape hatch for JWT-bearer SPAs (theo-trade, et al.): if the host
+    // provided a urlResolver, let it mint the full iframe URL itself
+    // using whatever primitive its auth model provides. Skip the shared
+    // mint-sid-from-cookies path, which only works for cookie-session
+    // SPAs (recipe default). IT-F2-437 2026-10-07.
+    if (this.urlResolver) {
+      try {
+        const resolved = await this.urlResolver();
+        if (resolved) {
+          this.iframeUrl = resolved;
+          return;
+        }
+      } catch { /* fall through to identity-only URL */ }
+      // Resolver returned null / threw → fall through to the identity-
+      // only URL so the shell at least renders something.
+      const bareFallback = this.useBrandedHost
+        ? '/data-agreements'
+        : `${this.membersOrigin}/${slug}/data-agreements`;
+      this.iframeUrl = `${bareFallback}${this._buildQueryString(null)}`;
+      return;
+    }
+
     const bare = this.useBrandedHost
       ? '/data-agreements'
       : `${this.membersOrigin}/${slug}/data-agreements`;
