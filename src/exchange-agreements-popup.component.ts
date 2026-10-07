@@ -141,6 +141,13 @@ export class ExchangeAgreementsPopupComponent implements OnChanges {
   @Output() dismissed = new EventEmitter<void>();
 
   iframeUrl: string | null = null;
+  /** Memoised SafeResourceUrl for the iframe [src] binding. Computed
+   *  ONCE when iframeUrl is set — the method-call pattern was returning
+   *  a fresh object every change-detection cycle, Angular compared [src]
+   *  by reference, and the iframe navigated on every CD tick (visible
+   *  as rapid-fire aborted GETs in the Network tab, "flashing" iframe).
+   *  IT-F2-437 2026-10-07 Mike HAR capture. */
+  private _trustedIframeUrl: SafeResourceUrl | null = null;
   private _escHandler: ((e: KeyboardEvent) => void) | null = null;
 
   async ngOnChanges(changes: SimpleChanges) {
@@ -149,9 +156,15 @@ export class ExchangeAgreementsPopupComponent implements OnChanges {
       // Mint sid and build iframe URL. Hide iframe until the URL is ready
       // (template falls through to the "Preparing…" placeholder).
       this.iframeUrl = null;
+      this._trustedIframeUrl = null;
       await this._buildIframeUrl();
+      // Memoise the SafeResourceUrl once — see field comment for why.
+      this._trustedIframeUrl = this.iframeUrl
+        ? this._sanitizer.bypassSecurityTrustResourceUrl(this.iframeUrl)
+        : null;
     } else {
       this.iframeUrl = null;
+      this._trustedIframeUrl = null;
     }
     // Esc-key dismiss — bind on open, unbind on close. Only in iframe mode;
     // legacy stub mode uses the Close button only.
@@ -227,12 +240,12 @@ export class ExchangeAgreementsPopupComponent implements OnChanges {
 
   private readonly _sanitizer = inject(DomSanitizer);
 
-  /** Angular's iframe [src] binding requires a SafeResourceUrl, not a plain
-   *  string — bypassSecurityTrustResourceUrl marks our known-safe URL
-   *  trusted. For same-origin relative URLs this is safe; for absolute
-   *  members URLs we're trusting the known members host. */
-  trustedIframeUrl(): SafeResourceUrl {
-    return this._sanitizer.bypassSecurityTrustResourceUrl(this.iframeUrl || '');
+  /** Expose the memoised SafeResourceUrl for the template [src] binding.
+   *  Computed once per iframeUrl change in ngOnChanges — do NOT compute
+   *  on-the-fly here (every call returns a fresh object, Angular compares
+   *  [src] by reference, iframe re-navigates every CD cycle). */
+  trustedIframeUrl(): SafeResourceUrl | null {
+    return this._trustedIframeUrl;
   }
 
   onScrimClick(e: MouseEvent) {
