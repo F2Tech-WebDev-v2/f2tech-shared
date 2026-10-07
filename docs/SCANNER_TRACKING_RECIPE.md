@@ -455,6 +455,12 @@ F2-ADMIN.UserDailyActivity:
     'op-zeta':        { max_tier: 'delayed', first_seen_at: '...', last_seen_at: '...', event_count: 1  }
   },
 
+  // Day-level overall tier — MAX across all scanners_viewed[*].max_tier
+  // (same live > delayed > eod precedence, UP-only during the day).
+  // In the example above: 'live' because op-rr hit live at least once.
+  // Answers "did this user touch live data at all today?" without a scan.
+  max_tier_day: 'live',
+
   // Rollup metadata
   first_event_at: '2026-10-07T13:42:11.084Z',
   last_event_at:  '2026-10-07T20:15:33.922Z',
@@ -467,6 +473,13 @@ F2-ADMIN.UserDailyActivity:
 update, max_tier for a scanner only moves UP, never down. If the
 user viewed `op-rr` at `delayed` at 10am + `live` at 2pm, max_tier
 stays `live` for the day — even if they go back to delayed at 4pm.
+
+**Day-level overall tier** (`max_tier_day`): same `live > delayed >
+eod` precedence applied across every scanner touched that day.
+Max of all `scanners_viewed[*].max_tier`. Also UP-only during the
+day. Primary use: single-field answer to compliance questions like
+"did this user touch any live data today?" without having to walk
+`scanners_viewed`.
 
 **EOD classification**: scanners whose data source is end-of-day
 (e.g. op-fingerprints — SIBYL EOD import) default to `eod`. Scanner-
@@ -504,7 +517,10 @@ await col.updateOne({_id: id}, {
   [`scanners_viewed.${evt.scanner}.max_tier`]: _tierUpsert(evt),  // helper that reads current + applies live>delayed>eod max
   [`scanners_viewed.${evt.scanner}.last_seen_at`]: evt.event_at,
   [`scanners_viewed.${evt.scanner}.event_count`]: $inc 1,
-  $setOnInsert: { [`scanners_viewed.${evt.scanner}.first_seen_at`]: evt.event_at }
+  $setOnInsert: { [`scanners_viewed.${evt.scanner}.first_seen_at`]: evt.event_at },
+  // Day-level overall tier — same UP-only precedence as per-scanner.
+  // _dayTierUpsert reads current max_tier_day, applies live>delayed>eod max against evt tier.
+  max_tier_day: _dayTierUpsert(evt)
 }, { upsert: true });
 ```
 
