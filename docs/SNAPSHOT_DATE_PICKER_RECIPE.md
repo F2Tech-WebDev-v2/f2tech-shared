@@ -216,15 +216,30 @@ const availableDates = useMemo(() => {
 Rules:
 
 - **PIPELINE_START** is the earliest date the SPA's producer wrote to
-  Mongo. Ask the backend lane — hardcode; won't change often.
-- **HOLIDAYS** is the NYSE calendar for the current + next year.
-  Extend annually.
+  Mongo. Ask the backend lane — hardcode; won't change often. On the
+  rare case the pipeline is years old, confirm it with the producer /
+  backend owner before shipping — adopting a wrong PIPELINE_START
+  renders months of unclickable grey cells.
+- **HOLIDAYS** is the NYSE calendar covering the full span from
+  PIPELINE_START through at least next year. **Extend backward, not
+  just forward** — a holiday set that only covers "current + next
+  year" wrongly offers past-year holidays (e.g. 2025 Good Friday) as
+  trading days when PIPELINE_START is older than this year. Keep one
+  Set with the full span.
 - **Recompute cadence**: at the top of every minute. Simpler cadences
   (daily / on-focus) miss the rollover to a new trading day mid-
   session; sub-minute is unnecessary since dates change once a day.
-- **Retire this** as soon as backend adds `/dates` per §4 — swap the
-  useMemo for a `fetch(...).then(setAvailableDates)` on mount. Delete
-  the holidays constant.
+- **When to fall back vs when to trust backend** (`/dates` is live but
+  may still be empty, see §4.4): switch per-request, not per-session.
+  Backend returns `[]` → use the fallback for this picker open.
+  Backend returns a non-empty list → use it. This way the moment the
+  producer puts a doc in today's dated DB, the next picker open shows
+  it without a SPA deploy.
+- **Retire this** when backend `/dates` is reliably populated AND the
+  SPA's call sites always use the backend response. A hybrid state
+  where fallback silently papers over a backend regression is worse
+  than either pure path — add a one-line `console.warn` on fallback
+  entry so a stuck /dates is visible in logs.
 
 **Gotcha (Mike IT-F2-360 cid b8d31a6c 2026-09-23):** the interval id
 in the minute-tick effect MUST live in a closure variable
@@ -236,6 +251,81 @@ which crashes the useEffect and takes the picker down with it.
 Works in Node.js (Timeout is an object) — dies on every browser.
 The reference snippet above uses the closure pattern; copy it
 verbatim.
+
+### 4.6.1 Angular / Luxon port of the client-side fallback
+
+The React snippet above drives off `new Date()` + `getDay()`. The
+Angular ports in the fleet (option-pit, flow, mti) use Luxon
+`DateTime` for consistent ET-zone math. Reference impl: option-pit
+`src/app/scans/zeta/zeta.component.ts` (IT-F2-287 c/34a4433).
+
+```typescript
+// Static class members
+private static readonly PIPELINE_START = '2025-04-02';  // ← confirm w/ producer
+private static readonly US_MARKET_HOLIDAYS = new Set<string>([
+  // Spans PIPELINE_START → today + 1y. Extend annually.
+  // 2025 (post-April-2 example): '2025-04-18', '2025-05-26', '2025-06-19',
+  //   '2025-07-04', '2025-09-01', '2025-11-27', '2025-12-25',
+  // 2026: '2026-01-01', '2026-01-19', '2026-02-16', '2026-04-03', ...
+]);
+
+private _client_side_trading_days(): string[] {
+  const start = DateTime.fromISO(MyComponent.PIPELINE_START, { zone: 'America/New_York' });
+  const today = DateTime.now().setZone('America/New_York').startOf('day');
+  const out: string[] = [];
+  let d = start;
+  while (d <= today) {
+    // Luxon weekday: 1=Mon..7=Sun. Skip Sat (6) + Sun (7).
+    if (d.weekday < 6) {
+      const iso = d.toFormat('yyyy-MM-dd');
+      if (!MyComponent.US_MARKET_HOLIDAYS.has(iso)) out.push(iso);
+    }
+    d = d.plus({ days: 1 });
+  }
+  out.reverse();  // newest-first; matches backend /dates descending contract
+  return out;
+}
+
+async load_dates(force = false) {
+  const { dates, today } = await this.service.getDates(force);
+  // Fallback trigger: backend returned an empty list (endpoint shipped but
+  // the Scanners row / collection isn't populated yet) OR getDates swallowed
+  // a network error into [] — treat both the same.
+  if (!dates || dates.length === 0) {
+    this.available_dates = this._client_side_trading_days();
+    this.today_iso = DateTime.now().setZone('America/New_York').toFormat('yyyy-MM-dd');
+  } else {
+    this.available_dates = dates;
+    this.today_iso = today;
+  }
+  if (this.datepickerInput?.nativeElement) this._init_datepicker();
+}
+```
+
+**Angular-specific gotchas:**
+
+- **Luxon `weekday` is 1-indexed from Monday** (1=Mon..7=Sun). JS
+  `Date.getDay()` is 0-indexed from Sunday (0=Sun..6=Sat). Mixing
+  the two drops the wrong days — e.g. `d.weekday === 0` is never true
+  in Luxon (there is no 0), silently never-filtering, so Sat/Sun
+  stays in the whitelist and the picker offers weekends. Always
+  `weekday < 6` for Mon-Fri when porting from `.getDay() === 0 || 6`.
+- **No `new Date("YYYY-MM-DD")` for ET math.** `new Date("2025-04-02")`
+  parses as UTC midnight; `.getDay()` on an ET machine already
+  west-of-UTC returns the previous weekday for the first few hours
+  of each day. Construct zoned DateTimes:
+  `DateTime.fromISO(iso, { zone: 'America/New_York' })`.
+- **No minute-tick effect needed in Angular** when `load_dates()`
+  runs on every picker-open + on tab-return (visibility change).
+  Change-detection re-reads the field; the "top of the minute"
+  trigger from §4.6 is a React-ism to force a `useMemo` re-run.
+  If you need periodic re-compute (long-lived component, no re-open),
+  use `rxjs/interval(60_000)` scoped to the component — not a bare
+  `setInterval` without cleanup.
+- **Match the backend's sort order.** Backend `/dates` returns
+  descending (newest-first) per §4; the client-side fallback must
+  do the same (`out.reverse()` after the ascending walk) or your
+  "latest populated day" selection logic reads the wrong end.
 
 ---
 
@@ -449,7 +539,18 @@ async onScanDateChange(next: string) {
 - [ ] `availableDates` is populated from the backend's `/dates`
       endpoint (§4). Do NOT ship without it — per §4.5 invariant #1,
       the graceful-degrade "every date ≤ today clickable" mode is for
-      dev smoke only and MUST NOT reach a customer.
+      dev smoke only and MUST NOT reach a customer. If the backend
+      `/dates` isn't live yet or is reliably returning `[]` because
+      the Scanners row / collection isn't populated, wire the §4.6
+      client-side trading-day whitelist (not graceful-degrade).
+- [ ] US_MARKET_HOLIDAYS set covers from PIPELINE_START through the
+      next NYSE calendar year — **backward AND forward**. A set that
+      only covers the current + next year will offer past-year
+      holidays (e.g. 2025 Memorial Day) as trading days if your
+      pipeline-start is older than this year.
+- [ ] Angular ports: confirm Luxon `.weekday` indexing (1=Mon..7=Sun)
+      vs JS `Date.getDay()` (0=Sun..6=Sat) when porting the §4.6
+      snippet. See §4.6.1 for the ported snippet.
 - [ ] Smoke: opening it with `availableDates` shows the current month
       with correct greys; last-populated day is highlighted with the
       accent outline when it IS today. **Pick a past date — the grid
@@ -467,6 +568,10 @@ async onScanDateChange(next: string) {
 - **Backend `/dates` endpoint:** `alpha-pivot-service/src/routes/meta.mjs`,
   `app.get("/api/signals/dates", ...)`. Empty-db filter added
   IT-F2-391 c/79446416.
+- **Angular + Luxon client-side fallback:**
+  `option-pit/src/app/scans/zeta/zeta.component.ts` —
+  `_client_side_trading_days()` + `load_dates()` fallback switch.
+  IT-F2-287 c/34a4433.
 
 ---
 
