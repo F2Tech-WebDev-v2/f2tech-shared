@@ -1705,6 +1705,47 @@ from §1's rendering description alone.
   socket.id). Match on `socket.data.sub` populated at
   authenticate_socket time.
 
+- **Push-socket SPAs: displaced session KEEPS receiving live ticks
+  after displacement** — the server-side slot-tracking + WS fanout
+  works, chip + banner flip correctly, but the user's push-socket
+  stays in the LIVE room it joined at connect time. Live ticks keep
+  flowing to a session the backend considers displaced — NYSE-
+  compliance hole. Fix: on the companion backend's
+  `on_live_session_change({op:'displaced'})` Redis handler, iterate
+  the user's connected sockets by `socket.data.sub` and move each
+  from its LIVE room to the paired DELAYED room. Reference impl:
+  `theo-trade-service` commit `d0297e1`
+  (`SocketIoService.on_live_session_change` + `LIVE_DELAYED_PAIRS`
+  table + per-socket `sock.leave(liveRoom); sock.join(delayedRoom)`
+  loop). gap-up-down doesn't hit this because its data path is
+  probe-pulled; push-socket SPAs MUST add the room transition. The
+  reclaim path intentionally doesn't auto-promote back to LIVE —
+  reclaim-via-reload re-opens sockets and authenticate_socket re-
+  reads live_data_access, joining the right room naturally. Mid-
+  session LIVE-promotion without re-auth is a trust gap.
+
+- **`_claimLiveSlot` never fires for my SPA — no displacement
+  publishes, slot record stays stale** — your SPA isn't sending
+  `X-F2-Session-ID` on authed requests, so f2-admin-service's
+  `_claimLiveSlot` at `auth.service.ts:2863` early-exits on
+  `from_header=false`. Without the header, the authoritative slot
+  tracking never runs — displacement, dup-tab detection, NYSE
+  compliance gate all silently no-op. Add the header on your
+  sanitize probe (minimum) and ideally on every authed REST call.
+  Session_id reads from `sessionStorage.f2_session_id` (shared with
+  the BroadcastChannel dedup §4.1); if empty, generate a 128-bit
+  hex nonce and stash. Reference impl: theo-trade commit `661c5dc`
+  (`DataAgreementsService._read_or_init_session_id`).
+
+- **Poll interval > LIVE_SESSION_TTL_SEC (60s) silently expires the
+  slot** — `live-session.service.ts` ages the slot record after 60s
+  of no claim-refresh. If your probe cadence is slower than 60s, a
+  second tab opens, backend sees empty slot = first-claim (not
+  displacement), no event fires. Keep the probe cadence ≤ 60s;
+  recipe default is 20s. Reclaim-based auto-reload paths cover the
+  edge-case where a tab was backgrounded past the TTL and
+  re-focused.
+
 ---
 
 ## 13. Origin
