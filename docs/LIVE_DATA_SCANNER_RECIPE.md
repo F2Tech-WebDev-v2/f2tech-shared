@@ -1746,6 +1746,28 @@ from §1's rendering description alone.
   edge-case where a tab was backgrounded past the TTL and
   re-focused.
 
+- **Chip stays null for a displaced user — SPA throws on 401 and
+  never recovers** — the backend's displace-gate fires BEFORE
+  entitlement evaluation (`_gateOnDisplacedSession` on authed
+  endpoints) → sanitize probe returns 401 with
+  `X-F2-Reject-Reason: displaced` and body `{"message":
+  "session_displaced"}`. Angular HttpClient (and axios /
+  fetch-with-throw-on-non-2xx) throws on 401; a naive catch block
+  returns the error and the chip never gets a probe snapshot →
+  renders null (per §2 load-order contract). Recipe §3.3 fix: on
+  that specific 401, re-run the probe with
+  `X-F2-Iframe-Context: 1` header which triggers the iframe
+  carve-out and returns the TRUE entitlement state. If the true
+  state is `realtime` → render as `delayed_displaced` (user was
+  entitled, just lost the slot) + show `SessionDisplacedBanner`.
+  If true state is anything else → render that real state (don't
+  over-signal displaced). Reference impl: theo-trade `b8ce532`
+  (`DataAgreementsService._do_probe(cfg, _id, iframeContext=true)`
+  called from outer catch when status===401 and reject-reason
+  matches). Mike IT-F2-437 2026-10-07 HAR cold-caught this exact
+  flow after my own `_claimLiveSlot` work started firing
+  displacement on his existing sessions.
+
 ---
 
 ## 13. Origin
