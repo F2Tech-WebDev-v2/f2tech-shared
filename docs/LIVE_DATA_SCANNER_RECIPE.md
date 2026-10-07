@@ -971,21 +971,35 @@ export class AppComponent {
 
 **`useBrandedHost` guidance for Angular adopters:**
 
-**Use the default (`useBrandedHost: true`)** — the iframe src is
-`/data-agreements?sid=…`, proxied via `vercel.json` rewrites to
-`members.f2-tech.ai/<slug>/data-agreements`. The customer-branded
-domain stays in the URL bar end-to-end, cookies stay same-origin to
-the SPA host, and the embedded members form reads them without
-3rd-party cookie restrictions. Mike directive IT-F2-437 2026-10-06:
-"when the popup for the exchange agreement comes up it should be using
-the customers branded domain".
+The *goal* is `useBrandedHost: true` — the iframe src is a same-origin
+`/data-agreements?sid=…` so the customer-branded domain stays in the
+URL bar end-to-end (Mike directive IT-F2-437 2026-10-06: "when the
+popup for the exchange agreement comes up it should be using the
+customers branded domain").
 
-Only drop to `useBrandedHost: false` as a diagnostic fallback — iframe
-src becomes absolute `https://members.f2-tech.ai/<slug>/data-agreements?sid=…`.
-Cookies then become 3rd-party; Firefox ITP will drop them for cold
-loads, and the embedded members form's downstream authed calls can
-401. Use only when the branded-host rewrites can't be added for a
-reason you can name.
+But **`useBrandedHost: true` requires f2-members Edge Middleware
+installed on the SPA host** — NOT a Vercel reverse-proxy rewrite. Edge
+Middleware intercepts `/data-agreements` on the branded host and
+serves the form directly, with `Set-Cookie` scoped to that same host.
+A Vercel reverse-proxy to `members.f2-tech.ai` *looks* correct — the
+URL bar stays branded, the HTML renders — but the members backend
+sets its session cookie with `Domain=members.f2-tech.ai`, which the
+browser rejects on the SPA's host. The embedded form loads, the user
+starts typing, the next authed save POST has no session, and the
+iframe bounces to the F2 Tech members login (Mike IT-F2-437 2026-10-06
+report: "the exchange agreement popup when I go to enter a street
+address flickers and bounds back to the F2 technology members login
+page"). **Validate the Edge Middleware is wired BEFORE flipping the
+flag.** Vercel reverse-proxy is a URL-bar trick, not a cookie-domain
+fix.
+
+Fallback: `useBrandedHost: false` — iframe src is absolute
+`https://members.f2-tech.ai/<slug>/data-agreements?sid=…`. The
+iframe's effective origin IS members, so `Set-Cookie` on members
+bind correctly and the form's authed save actually holds a session.
+Cost: the customer sees `members.f2-tech.ai` in the iframe URL bar
+during the agreement flow (user-visible). Reference: theo-trade
+(IT-F2-437, pending f2-members Edge Middleware for theotradelive.com).
 
 **vercel.json rewrites — required for the default branded-host mode:**
 
