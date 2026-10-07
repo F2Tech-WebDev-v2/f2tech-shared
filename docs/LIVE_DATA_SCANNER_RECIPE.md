@@ -1001,6 +1001,59 @@ Cost: the customer sees `members.f2-tech.ai` in the iframe URL bar
 during the agreement flow (user-visible). Reference: theo-trade
 (IT-F2-437, pending f2-members Edge Middleware for theotradelive.com).
 
+**`urlResolver` escape hatch for JWT-bearer SPAs:**
+
+The shared mint-sid-from-cookies flow (default when no urlResolver) is
+cookie-session-only. If your SPA is JWT-bearer (id_token in memory,
+sent as `Authorization: Bearer …`, no `f2_id` / `f2_access` cookies on
+the SPA host), the mint POST will 401 with `"no session cookies"` even
+when CORS is fine and the proxy rewrite is wired — the server has
+nothing to read because the cookies the endpoint expects simply don't
+exist for your SPA. The iframe then loads sid-less, members has
+nothing to redeem, and bounces to the F2 members login page — a
+cardinal white-label SSO sin on branded SPAs where the end-user
+should never see F2 credentials (Mike IT-F2-437 2026-10-07 HAR capture
+root-caused this exact flow on theo-trade).
+
+Pass a `urlResolver` input — a `() => Promise<string | null>` callback
+the SPA provides — to mint the sid via your own primitive and return
+the full members iframe URL. The component calls your resolver INSTEAD
+of the mint-sid-from-cookies flow.
+
+Reference impl: theo-trade uses
+`/rest/auth/exchange-portal-token` (takes the id_token in the body,
+returns a members sid URL) via `AuthService.exchange_portal_token_for_sid_url`.
+Resolver wiring:
+
+```typescript
+readonly resolveAgreementsUrl = async (): Promise<string | null> => {
+  const token = this.authService.get_auth_token();
+  if (!token) return null;
+  const result = await this.authService.exchange_portal_token_for_sid_url(token);
+  if ('error' in result) return null;
+  return result.url;
+};
+```
+
+Template:
+
+```html
+<f2-exchange-agreements-popup
+  [visible]="…"
+  [customerSlug]="'your-slug'"
+  [useBrandedHost]="false"
+  [urlResolver]="resolveAgreementsUrl"
+  (dismissed)="…">
+</f2-exchange-agreements-popup>
+```
+
+Arrow property (not a method) so `this` stays bound when the component
+invokes the resolver as a callback. If the resolver throws or returns
+null, the component falls through to the identity-only URL (same as
+mint-sid failure). Debug: 401 on your resolver → the id_token the
+resolver passed is expired; your SPA needs to refresh before the next
+openAgreements() call.
+
 **vercel.json rewrites — required for the default branded-host mode:**
 
 ```jsonc
