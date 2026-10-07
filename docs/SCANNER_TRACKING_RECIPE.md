@@ -1,16 +1,24 @@
-# Scanner Billing + Exchange-Agreement Attribution Recipe
+# Scanner Tracking Recipe
 
-Fleet-wide, scanner-agnostic recipe for standing up a new scanner so
-that:
+Fleet-wide, scanner-agnostic recipe covering **everything we record
+about a scanner over its lifecycle**:
 
-- Members **can access it** (Cognito `custom:scanners` → scanner-side
-  `/rest/auth/validate-token` → `allowed_routes` → SPA `has_route_access`).
-- Billing **attributes it correctly** (`F2-ADMIN.UserTracking` activate /
-  deactivate events + the per-(email, customer, scanner) supplement
-  gate in `billing.service.ts get_billing_report`).
-- Exchange-agreement coverage **gates its live-data display** per
-  customer (`/rest/user/data-agreements?customer=<slug>` sanitize probe
-  → `data_tier` + chip subdoc).
+- **Entitlement tracking** (§2-3) — who holds the scanner (Cognito
+  `custom:scanners` + `F2-ADMIN.UserTracking` activate / deactivate
+  events + billing report supplement gate).
+- **Access-route tracking** (§2.3-2.4) — how a holder reaches the SPA
+  (scanner-side `/rest/auth/validate-token` → `allowed_routes` → SPA
+  `has_route_access`).
+- **Exchange-agreement tracking** (§4) — per-customer agreement
+  coverage gating live-data display
+  (`/rest/user/data-agreements?customer=<slug>` sanitize probe →
+  `data_tier` + chip subdoc).
+- **Live-vs-delayed usage tracking** (§7a) — which tier a user
+  actually consumed. Partially recorded today (login events +
+  entitlement attributes); full per-session tier log is a gap.
+- **Scanner view tracking** (§7b) — which scanner the user actually
+  opened. **Unimplemented today.** Shape documented so adopters agree
+  before anyone ships.
 
 Sibling of the other scanner recipes:
 
@@ -19,9 +27,10 @@ Sibling of the other scanner recipes:
 - `SCANNER_DATA_WIRING_RECIPE.md` — producer → f2-api → SPA data path
 - `AG_GRID_INFINITE_SCROLL_RECIPE.md` — paginated row delivery
 
-This one is about **identity + money**, not data. Target reader: a
-backend / `f2-session` agent landing a new scanner who needs to make
-it billable + agreement-gated without re-deriving the fleet code.
+Target reader: a backend / `f2-session` agent landing a new scanner
+who needs the lifecycle recorded correctly across billing, agreements,
+usage, and (future) view instrumentation — without re-deriving from
+fleet code.
 
 ---
 
@@ -378,21 +387,232 @@ fields being empty.
 
 ---
 
-## 7. Per-view usage tracking — current gap
+## 7. Usage tracking — current state + planned shape
 
-Fleet does NOT currently log per-view scanner impressions (which
-scanner a user actually opened on a given day, vs. just holding the
-claim). UserTracking records **entitlement** events, not **use**.
+### 7.0 What's recorded today vs. what isn't
 
-If a product needs usage tracking:
+| Signal | Collection | Grain | Notes |
+|---|---|---|---|
+| Entitlement grant / revoke | `F2-ADMIN.UserTracking` | per (email, customer) with `events[]` of `add_scanner` / `remove_scanner` | Authoritative for billing. Written from `user-management.service.ts upsert_tracking` (L6772-6848). Only 2 event types in use. |
+| Login / session created | `F2-ADMIN.AuthLogins` | one doc per login (customer + date, nothing scanner-specific) | 157k+ rows; used by billing reports to attribute monthly actives. |
+| Login event with Cognito user snapshot | `F2-ADMIN.LoginEvents` | per login (user_id, customer, sub, host, user_status, enabled, user_create_date, user_last_modified_date) | 60k+ rows; richer identity snapshot but still no scanner-level breakdown. |
+| Entitlement attribute mutation (admin audit) | `F2-ADMIN.EntitlementAudit` | one doc per Cognito attribute write (changed_by + old/new attrs + reason + ip + ua) | 33 rows; audit-only, not for billing. |
+| Legacy per-scanner access history (import) | `F2-ADMIN.AuthLogins_Graphem` | per (user, scanner) with First/Last Access Date + Live Eligible + Agreement Status | 7k+ rows, historical import, not live-written. Rich shape worth mirroring for the new live tracker (§7b). |
+| Live-session slot ownership | Redis `F2:LIVE_SESSIONS_SLOT:<user>:<scanner>` + `F2:LIVE_SESSIONS_DISPLACED:<user>` | one record per user+scanner slot; TTL 60s | Serves single-window enforcement + displacement broadcast. Not persisted for retro usage. |
+| Scanner-view impression (user opened scanner X) | — | — | **Unimplemented.** |
+| Per-session tier (live vs delayed) consumed | — | — | **Unimplemented** as a dedicated row. Derivable from LiveSessionService slot history IF persisted (currently only Redis + ephemeral). |
 
-- Document the shape here before implementing (new section) so
-  consumers across the fleet agree on event shape + collection name.
-- Candidate shapes: `F2-ADMIN.ScannerImpressions` (per view-mount
-  event), `F2-ADMIN.ScannerSessions` (per connected-WS window).
+**Mike's prior framing** (IT-F2-439 c/8a9aefac): &ldquo;we already have
+some of this [information] fo the billing.&rdquo; True for *entitlement*
++ *per-customer login counts*; false for *per-scanner view* +
+*per-session tier*. Those are the two gaps §7a + §7b fill.
 
-**Current state: unimplemented.** Don't assume it exists; don't rely
-on it for billing.
+### 7a. Live-vs-delayed usage tracking — proposed shape
+
+Needed because today the fleet knows **which users have live_data_access
+in their Cognito claim** but not **which users actually consumed live
+data on day D for scanner S**. Compliance audits (NYSE, OPRA) want the
+second — a per-session log that proves a specific user received live
+ticks at a specific timestamp for a specific scanner.
+
+#### 7a.1 Collection: `F2-ADMIN.LiveSessionLog`
+
+Append-only. One doc per live-session slot open/close event. Writer:
+`f2-admin-service/src/services/live-session.service.ts
+updateLiveSessionSlot` extended to persist (currently only publishes
+to Redis + fire-and-forget `recordSessionEndEvent`).
+
+```
+{
+  _id: ObjectId,
+  user_id: '<cognito-sub>',       // not email — email dupes across pools
+  user_email: '<denormalized for billing-report joins>',
+  customer: 'option-pit',
+  scanner: 'op-rr',               // ← per-scanner, unlike LoginEvents
+  session_id: '<uuid-from-SPA-sessionStorage>',
+  pool_id: 'us-east-1_GHFRDfwAo',
+
+  op: 'opened'                     // first slot claim
+    | 'displaced_by_new_session'   // another tab took the slot
+    | 'displaced_by_reclaim'       // user clicked reclaim on another tab
+    | 'closed_by_logout',
+
+  tier: 'live' | 'delayed',        // what tier was being served
+  live_data_access_at_write: true | false,  // Cognito claim snapshot
+  review_status_at_write: 'approved' | 'pending' | 'declined' | null,
+                                    // exchange-agreement snapshot
+
+  started_at: <ISO>,                // slot opened (null on open row — self)
+  ended_at: <ISO>,                  // slot closed (null on open row)
+  duration_ms: <number>,            // ended_at - started_at (null on open)
+
+  ip: '<from X-Forwarded-For>',
+  user_agent: '<from request header>',
+  source: 'live_session_service',
+  envelope_id: '<matches Redis publish envelope>',
+  at: <ISO>                         // when THIS row was written
+}
+```
+
+Indexes: `{user_id:1, scanner:1, started_at:-1}` for per-user audit,
+`{customer:1, started_at:-1}` for per-customer reports,
+`{started_at:1}` TTL = 395 days (NYSE audit retention).
+
+#### 7a.2 Write path
+
+Extend `live-session.service.ts updateLiveSessionSlot` + the existing
+`recordSessionEndEvent` fire-and-forget. On every slot transition:
+
+```
+transition               → LiveSessionLog write
+─────────────────────────────────────────────────────────
+empty → claimed          → {op:'opened', started_at: now}
+claimed → displaced      → {op:'displaced_by_new_session',
+                            ended_at: now, duration_ms: now - started}
+claimed → reclaimed      → {op:'displaced_by_reclaim', ...}
+claimed → explicit-close → {op:'closed_by_logout', ...}
+```
+
+Fire-and-forget via `void` — must not add latency to the user-facing
+request path.
+
+#### 7a.3 Read path
+
+New admin endpoint:
+
+```
+GET /rest/admin/live-sessions/report?customer=<slug>&from=<ISO>&to=<ISO>
+```
+
+Returns per-(email, scanner, day) aggregation: total live-session
+minutes, number of distinct sessions, number of displacements. Feeds
+a compliance audit CSV + a &ldquo;live users per scanner&rdquo; column
+on the existing billing grid.
+
+#### 7a.4 Backfill from LiveSessionsAudit
+
+If a per-event audit was already being written (per the KG runbook
+`live-session-slot-tracking-2026-09-xx` — check first), backfill a
+single-pass transform script to seed `LiveSessionLog` from the first
+observed slot ownership. Otherwise start fresh — the collection grows
+with new activity.
+
+### 7b. Scanner view tracking — proposed shape
+
+Needed because today the fleet knows **which scanners a user is
+entitled to** but not **which scanners the user actually looked at
+this month**. Product + marketing + usage-based pricing all want the
+second.
+
+#### 7b.1 Collection: `F2-ADMIN.ScannerViews`
+
+Append-only. One doc per view-mount event. Writer: SPA-side
+instrumentation (not scanner-backend) because the backend only sees
+the ping-polls, not the actual tab focus.
+
+```
+{
+  _id: ObjectId,
+  user_id: '<cognito-sub>',
+  user_email: '<denormalized>',
+  customer: 'option-pit',
+  scanner: 'op-rr',
+
+  op: 'mounted'            // user navigated INTO the scanner view
+    | 'unmounted'          // navigated AWAY (route change / tab close)
+    | 'heartbeat',         // every 5 min while mounted (keeps dwell live)
+
+  mounted_at: <ISO>,
+  unmounted_at: <ISO>,
+  dwell_ms: <number>,       // null on mounted/heartbeat; set on unmounted
+
+  // Context snapshot — matches what SPA was showing
+  tier: 'live' | 'delayed',
+  symbol_list_filter: '<name>' | null,
+  tab_sub_route: '<sub-slug>' | null,  // e.g. 'risk-reversal' vs 'zeta'
+
+  session_id: '<matches LiveSessionLog.session_id>',  // join key
+  ip, user_agent, source: 'spa_view_tracker',
+  at: <ISO>
+}
+```
+
+Indexes: `{user_id:1, scanner:1, at:-1}`,
+`{customer:1, scanner:1, at:-1}`, TTL = 180 days.
+
+#### 7b.2 SPA write path
+
+Shared f2tech-shared component `useScannerViewTracker(scanner_id)`
+hook that:
+
+1. On mount: POST
+   `/rest/user/scanner-views { scanner, op:'mounted' }`.
+2. Every 5 min while mounted: POST `{ scanner, op:'heartbeat' }`.
+3. On unmount / `visibilitychange: hidden` / `beforeunload`: POST
+   `{ scanner, op:'unmounted', dwell_ms }` with `keepalive:true`
+   (standard pattern per `feedback_keepalive_on_tab_close_fetches`).
+
+Reference consumers:
+
+- `t3-core4-frontend/src/scanner/ScannerView.protected.tsx` — one
+  mount point for every T3 scanner view; wrap with the hook.
+- Per-customer SPAs each adopt via f2tech-shared import; same hook
+  signature + no scanner-specific coupling.
+
+#### 7b.3 Backend endpoint
+
+```
+POST /rest/user/scanner-views
+Body: { scanner, op, session_id?, dwell_ms? }
+Headers: Authorization: Bearer <id_token>, X-F2-Session-ID
+```
+
+Writes to `F2-ADMIN.ScannerViews`. Writer: a new slim controller
+`ScannerViewsController` on `f2-admin-service`. Auth: standard
+`F2AuthMiddleware` (Bearer id_token). No admin role required — any
+authenticated user can log their own view (user_id derived from
+token, not from body).
+
+Rate-limit: client-side 1 req per view-mount + 1 per 5-min
+heartbeat is already low enough. Backend soft-cap at 10 req/min per
+user_id as DOS defense.
+
+#### 7b.4 Read path
+
+New admin endpoint:
+
+```
+GET /rest/admin/scanner-views/report?customer=<slug>&from=<ISO>&to=<ISO>
+```
+
+Returns per-(email, scanner, day) aggregation: distinct view
+sessions, total dwell minutes, avg sessions per day. Feeds a
+&ldquo;scanner engagement&rdquo; column alongside billing +
+LiveSessionLog on the admin reports grid.
+
+#### 7b.5 Why SPA-side, not scanner-backend
+
+- A user with the WS socket open but tab in background isn't
+  really &ldquo;viewing&rdquo; the scanner. Backend sees the socket;
+  only the SPA knows the tab-focus state.
+- Backend-only tracking would double-count users with multiple tabs
+  on the same scanner.
+- `visibilitychange` + `beforeunload` + `keepalive:true` is the
+  fleet pattern for durable client-side signal delivery (see
+  f2tech-shared `reportError` for the precedent).
+
+#### 7b.6 Adoption plan
+
+Rollout in two phases, non-blocking:
+
+1. **Phase 1 — collection + endpoint only.** Ship `ScannerViews`
+   collection + `POST /rest/user/scanner-views` + the admin read
+   endpoint. SPA opt-in per scanner — no fleet-wide requirement.
+2. **Phase 2 — SPA f2tech-shared hook.** Reference-impl in
+   t3-core4-frontend (`ScannerView.protected.tsx` wrapper), then
+   roll out across other per-product SPAs as they adopt the hook on
+   their own schedule. Billing reports show &ldquo;engagement&rdquo;
+   column only for scanners that have the hook wired.
 
 ---
 
