@@ -459,6 +459,96 @@ which physical database Mongo reads from.
       contains `tier=delayed`, response `db:` field is
       `<PREFIX>_DLYD-<today>`; WS URL contains `tier=delayed`.
 
+### 8.3 f2-api push-pipeline operational gotchas (IT-F2-406)
+
+Fleet-standard pattern for append-view WS fanout is: producer → mongo
+change-stream → `stream-watcher` → redis → `f2-api` push-subscriber →
+WebSocket client. This section captures the gotchas that bit live
+during IT-F2-406 (Option Sniper Tape). Each one surfaces as "WS looks
+connected, zero rows arriving".
+
+**(a) The silent $10k premium floor** — `f2-api`'s `matchesFilterSpec`
+applies `FLOW_DEFAULT_MIN_PREMIUM = $10,000` (per-print notional =
+`TradeSize × TradePrice × 100`) when the subscriber's filter doesn't
+override it. Producers whose per-print `TradeSize` is small (e.g.
+Option Sniper writes `TradeSize=10` + `TradePrice=0.55` = $550) have
+every doc dropped before fanout. Two fixes, pick one:
+
+- **SPA override** — subscribe with `{filter:{minPremium:0}}`:
+  ```js
+  ws.onopen = () => ws.send(JSON.stringify({ type: 'subscribe', filter: { minPremium: 0 } }));
+  ```
+- **Server-side** (recommended for new scanners) — set
+  `F2-ADMIN.Scanners.<slug>.Stream[*].SkipPremiumFloor:true`. Reflects
+  the actual scanner semantics; SPA override is not needed.
+
+**(b) f2-api's redis push-subscriber can get stuck** — ioredis
+occasionally lands in a permanent reconnect-fail state after a boot-
+time race or a redis blip, surfacing as `[push sub] connect
+ECONNREFUSED 127.0.0.1:6379` spam on every worker. Live WS clients
+stay connected and happily subscribed, but zero messages arrive —
+because `f2-api` itself never receives the redis publishes.
+
+**Detect:** `pm2 logs f2-api --lines 1000 --nostream | grep -c
+ECONNREFUSED`. Non-zero on all 16 workers = stuck.
+
+**Recover:** `pm2 restart f2-api --update-env` on `web-backend-srvr-1`.
+Verify after: `pm2 logs f2-api --lines 300 --nostream | grep
+"subscribed <your-channel>" | wc -l` → expect `16 × #channels` lines
+(one per worker per channel).
+
+**(c) The subscribe-on-open contract** — f2-api closes any WS that
+doesn't send `{type:"subscribe", filter:{...}}` within ~a few seconds
+of the handshake. If your `ws.onopen` doesn't send one, the server
+closes with 1006 and your reconnect-loop fires at whatever your
+backoff is set to. Floor the first reconnect at **2s** so a
+close-on-no-subscribe can't drive a tight loop. Mirror
+`alpha-shark-flow/src/ws/flowSocket.ts` for the full pattern.
+
+**(d) Scanner slug stamp on the client** — the WS envelope's
+`doc.scanner` carries the producer's label (`"Smoke_Test"`, `"Option
+Hacker"`, `"Lottery"`), NOT the sub-tape slug (`"test"`, `"sniper"`,
+`"lottery"`) that the SPA sidebar keys on. REST snapshot (`f2-admin-
+service` ApiController) already normalizes to the slug; WS does not.
+Stamp in `onmessage`:
+
+```js
+ws.onmessage = (ev) => {
+  const envelope = JSON.parse(ev.data);
+  const doc = envelope?.doc;
+  if (!doc) return;
+  onRow(normalizeDoc({ ...doc, scanner: slug }, ...));  // NOT doc.scanner || slug
+};
+```
+
+**(e) Firefox HAR exporter doesn't record WS message frames** — the
+handshake row shows status 101, `Size: 0 B`, `send=0 recv=0` even
+when subscribes and messages are flowing. Instrument the SPA with
+`console.info` on `ws.onopen` / `onmessage` / `onclose` instead; the
+browser Console is authoritative for frames even when the HAR says
+otherwise.
+
+**(f) Diagnostic smoke-channel pattern** — when the production
+cadence is low (OS writes ~1 msg/channel/stats-window) and you can't
+tell "quiet producer" from "silently-dropping fanout" apart, deploy
+a smoke-test channel visible only to admins:
+
+1. Add a `Test_Tape` collection to the live source DB pattern.
+2. Add a 14th entry to `Scanners.<slug>.Stream` for `Test_Tape` →
+   `<cust>:<scanner>:test` → `/ws/<cust>/<scanner>/test`, with
+   `SkipPremiumFloor:true`.
+3. Deploy a pm2 producer that inserts 1 synthetic print/sec.
+4. SPA sidebar renders the admin-only entry only when the token
+   passes `tokenIsAdmin()` (see
+   `f2tech-shared/docs/SCANNER_AUTH_RECIPE.md` for the helper).
+5. Admins see the ⚡ Test row ticking every second → chain is green.
+   If the production tabs don't tick, the problem is upstream (data
+   volume, filter config, pool verifier), not the pipeline itself.
+
+Reference impl: IT-F2-406 (`option-sniper-tape`), producer at
+`web-backend-srvr-1:~/stream-watcher/os-smoke-producer.js`, Stream
+entry on `F2-ADMIN.Scanners.os-osv2`.
+
 ---
 
 ## 9. Adoption checklist for a new SPA
