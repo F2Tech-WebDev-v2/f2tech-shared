@@ -578,6 +578,171 @@ only to admins:
 Reference impl: `option-sniper-tape` / `os-smoke-producer` pm2
 service on `web-backend-srvr-1` (IT-F2-406).
 
+### 8.4 Static-alert scanners — poll-based delayed fanout
+
+Scanners whose rows are **append-only timestamped alerts** (not
+real-time price ticks) don't need the dual-DB routing from §8.2.
+Live and delayed subscribers can read from the SAME `<PREFIX>_LIVE-`
+collection; the delay is enforced at the fanout layer by filtering
+on an event timestamp field, with the service polling at a short
+interval instead of fanning the change-stream directly.
+
+**When to use this pattern instead of §8.2 dual-DB:**
+
+- Rows carry a stable `event_at` / `created_at` / `ExchangeMessageTimeStamp`
+  field that producer sets at insert time.
+- The scanner is OK with a few-seconds poll granularity instead of
+  sub-second change-stream latency (append-logs don't need tick-
+  level freshness).
+- You don't want to run a parallel delayed-tier producer / DB copy.
+
+**Mechanics:**
+
+- **Live tier**: unchanged. Mongo change-stream → stream-watcher →
+  redis → f2-api WS fanout, delivered as soon as the insert lands.
+- **Delayed tier**: f2-api spawns a per-scanner poll loop at
+  `Scanners.<slug>.DataTierPollIntervalSeconds` (SOT, seeded 15s).
+  Each tick reads `<PREFIX>_LIVE-{ET-date}.<Collection>` for docs
+  where `event_at ∈ (lastPollAt, NOW - DataTierDelayMinutes*60_000]`
+  and fans the result to delayed-tier WS subscribers only. Both
+  SOT values are cached in-service (same TTL/invalidation pattern
+  as the `data_tier` chip delay-copy setting).
+- **REST snapshot (`f2-admin-service2`)**: for `?tier=delayed`,
+  apply the same `event_at <= NOW - DataTierDelayMinutes*60_000`
+  filter directly on the single LIVE collection; no dual-DB name
+  swap.
+
+**SOT fields on `Scanners.<slug>` (new in IT-F2-406):**
+
+| Field | Type | Default | Purpose |
+|---|---|---|---|
+| `DataTierDelayMinutes` | number | — (required for the pattern) | How old a doc must be before a delayed subscriber may see it. Also drives the chip label (e.g. `45` → "45-min Delayed Data"). |
+| `DataTierPollIntervalSeconds` | number | 15 | Delayed-tier poll cadence. Trade-off: lower = fresher delayed fanout + more mongo reads per minute. |
+
+**Chip copy integration** — the sanitize probe at
+`/rest/user/data-agreements` composes `chip.label` with the SOT
+minute count so SPAs render the right string ("15-min Delayed Data"
+on the Core4 default, "45-min Delayed Data" on Option Sniper, etc.)
+without any per-scanner SPA code change. Shared `DataTierChip`
+prefers the server-driven `chip` subdoc when present (§1.1 line 39).
+
+**Adopter checklist for a new scanner on this pattern:**
+
+- [ ] Producer writes a monotonic timestamp field on every insert
+      (`event_at` ISO or `ExchangeMessageTimeStamp` ms-since-midnight).
+- [ ] `Scanners.<slug>.DataTierDelayMinutes` set to the agreed delay
+      (consult compliance; 15 min is the fleet default for exchange-
+      delayed data, 45 min for secondary scanners).
+- [ ] `Scanners.<slug>.DataTierPollIntervalSeconds` set (15 is a
+      safe default; raise for low-volume scanners).
+- [ ] f2-api attached a delayed-tier poller for each `Stream[]`
+      slug (compare against boot log — `[delayed-poll] attached
+      <PREFIX>_LIVE-<date>.<Collection> for <ws-path>` on each
+      cluster worker × scanner).
+- [ ] `f2-admin-service2 /api/<scanner>/*?tier=delayed` applies the
+      timestamp filter on its snapshot route.
+- [ ] Sanitize probe `/rest/user/data-agreements` returns `chip` /
+      `banner` payload with the SOT minute count — spot-check with
+      a delayed-tier user: response `chip.label` reads
+      `"<DelayMinutes>-min Delayed Data"`.
+
+Reference impl: IT-F2-406 (`option-sniper-tape`, `os-osv2` scanner,
+`DataTierDelayMinutes: 45`, `DataTierPollIntervalSeconds: 15`),
+SPA ship `d2f5dd6` + `8fd0b92`.
+
+### 8.5 Customer realtime-override mode
+
+Some customer agreements grant **unconditional realtime access** —
+no exchange-agreement form, no delayed fallback, no DataTierChip
+visible. The SPA + sanitize probe honor this via a customer-level
+SOT setting (`Customers.<slug>.wildcard_access` or
+`customer_override`, verified via `brand-config.customer_override`),
+NOT a per-user Cognito claim.
+
+**Sanitize probe response shape when override is active:**
+
+```jsonc
+{
+  "data_tier": "realtime",     // backend forces realtime regardless of agreement
+  "chip": null,                 // backend skips chip composition
+  "banner": { "visible": false },
+  "realtime_override": {
+    "active": true,
+    "source": "customer_wildcard" | "customer_override" | "scanner_wildcard",
+    "until": "2026-12-31T23:59:59Z" | null  // TTL-gated or indefinite
+  }
+}
+```
+
+Fallback flat-boolean form `realtime_override_active: true` is
+also tolerated by SPAs during backend rollout — adopters parse
+both shapes.
+
+**SPA handling (minimal pattern):**
+
+```jsx
+const { realtimeOverride } = probeResult;  // new field on sanitize
+
+// Chip hides via recipe §2 null-contract — no shared-component change needed.
+<DataTierChip
+  dataTier={realtimeOverride ? null : dataTier}
+  chip={realtimeOverride ? null : serverChip}
+  onAgreementsClick={openAgreements}
+/>
+
+// Banner hides.
+<ExchangeAgreementsBanner
+  visible={!realtimeOverride && bannerState.visible}
+  …
+/>
+
+// Force live tier on WS/REST (belt-and-suspenders — backend already returns realtime).
+const tier = realtimeOverride ? 'live' : tierForDataTier(dataTier);
+```
+
+**What the backend does:**
+
+- `applyTierToPattern` / delayed-poll loop (§8.2 / §8.4) skipped for
+  this user's requests — treats them as live-eligible unconditionally.
+- Sanitize probe sets `data_tier: "realtime"` AND `chip: null` AND
+  `banner.visible: false`. The `data_tier` field alone would render
+  a green "Live Data" chip in the shared component's fallback branch,
+  so the `chip: null` + SPA conditional-null-pass combo is what
+  achieves full hide.
+- `realtime_override.until` carries the TTL from the customer doc
+  (null = no expiry). SPAs don't need to track the TTL; the
+  sanitize probe re-polls on focus / 60s / mount per §3.4 and will
+  flip the signal back to false automatically when it expires.
+
+**Who grants the override:**
+
+- Enterprise / white-label customer contracts that include realtime
+  as part of the subscription (compliance pre-cleared).
+- Internal / admin customer slugs for staff access.
+- Short-term grants during customer onboarding / support (set the
+  `until` field — SPA re-probes clear the chip without a reload).
+
+**Precedence vs other states:**
+
+Override wins over everything except `denied` (user with no
+scanner entitlement at all — see §1.1 denied row). Specifically
+the override masks:
+
+- `delayed_by_agreement` (unsigned / declined / under-review)
+- `delayed_pro_gate` (Pro user, no agreement)
+- `delayed_displaced` (slot taken by another tab)
+- The entire `banner` subdoc.
+
+Rationale: a customer with a wildcard realtime grant has already
+cleared compliance at the contract level; forcing them through
+the per-user agreement flow is redundant AND breaks their UX
+(they'd see "15-min Delayed Data" chips while actually receiving
+realtime fanout).
+
+Reference impl: IT-F2-406 (`option-sniper-tape`), SPA ship
+`8fd0b92` wires chip + banner + tier short-circuits on
+`realtimeOverride`.
+
 ---
 
 ## 9. Adoption checklist for a new SPA
