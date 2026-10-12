@@ -654,10 +654,32 @@ SPA ship `d2f5dd6` + `8fd0b92`.
 
 Some customer agreements grant **unconditional realtime access** —
 no exchange-agreement form, no delayed fallback, no DataTierChip
-visible. The SPA + sanitize probe honor this via a customer-level
-SOT setting (`Customers.<slug>.wildcard_access` or
-`customer_override`, verified via `brand-config.customer_override`),
-NOT a per-user Cognito claim.
+visible. The SPA + sanitize probe honor this via **customer-level
+SOT settings on the `Customers` doc** (mongo field names, as of
+IT-F2-406 end-of-day 2026-10-12):
+
+| Mongo field | Shape | Meaning |
+|---|---|---|
+| `Customers.<slug>.data_tier_override` | `{ mode: "realtime" \| "delayed" \| "disabled" \| "off" }` | Per-customer override written by the admin UI's "Customer data-tier override" selector. Priority order: company-wide override > this customer override > per-user entitlement. `mode: "realtime"` fires the override. |
+| `Customers.<slug>.wildcard_access_until` | ISO date string | TTL-gated realtime grant. If present and in the future, override fires with `source: "wildcard_access"`. |
+| `Customers.<slug>.company_override` *(infrastructure-wide)* | *(internal)* | Company-wide realtime grant for staff/testing. Highest priority. |
+
+Reads happen server-side in `customer-directory.service.ts`
+(`getDataTierForSlug` + `getWildcardAccess`), scoped to the
+**scanner's customer slug** (the `?customer=<slug>` query param on
+the sanitize probe), NOT the auth'd user's own customer. If a user
+belongs to customer A but visits customer B's SPA, override on A
+does not apply — write the override on the scanner's customer to
+test an end-to-end SPA UX.
+
+> **Field-name trap.** Earlier drafts of this section referred to
+> `wildcard_access` and `customer_override` as mongo field names —
+> those are the brand-config payload shapes that `f2-members`
+> consumes (snake-case versions of the Customers-doc keys), NOT the
+> mongo field names. Always read the real mongo keys when writing
+> or probing: `data_tier_override.mode`, `wildcard_access_until`.
+> Dropped by IT-F2-406 cid 7be799a7 + f2-session cid ac5fa6fe
+> correction.
 
 **Sanitize probe response shape when override is active:**
 
@@ -668,8 +690,8 @@ NOT a per-user Cognito claim.
   "banner": { "visible": false },
   "realtime_override": {
     "active": true,
-    "source": "customer_wildcard" | "customer_override" | "scanner_wildcard",
-    "until": "2026-12-31T23:59:59Z" | null  // TTL-gated or indefinite
+    "source": "data_tier_override" | "wildcard_access" | "company_override",
+    "until": "2026-12-31T23:59:59Z" | null  // TTL-gated (wildcard_access_until) or indefinite
   }
 }
 ```
