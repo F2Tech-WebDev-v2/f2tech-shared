@@ -353,6 +353,15 @@ cover the state.
 
 ## 8. WS transport pattern
 
+> **Fleet-standard stack for live-updating scanner data** (Mike IT-F2-372
+> c/9c86ef30 2026-10-13): every scanner that needs rows to tick in near
+> real time uses the same five-hop pipeline — mongo change-stream →
+> stream-watcher → redis pub/sub → f2-api WS fanout → nginx proxy on the
+> branded host → SPA socket. The diagram + each hop's config contract
+> live at **§8.3**. The sections below (§8.1 member-SSE alternative, §8.2
+> live-vs-delayed routing, §8.4 static-alert poll fanout, §8.5 realtime
+> override) are all variations on this baseline — read §8.3 first.
+
 Same-origin `socket.io` polling transport, path `/socket.io/`, routed
 through the SPA's own `alpha-pivot-service`-style backend via Vercel
 rewrites. Cross-origin WSS to `f2-backend-srvr2` doesn't work when
@@ -462,15 +471,54 @@ which physical database Mongo reads from.
 ### 8.3 Mongo collection → SPA live-update pipeline — operational gotchas
 
 Fleet-standard pattern for any mongo collection that needs to drive
-live row updates in a SPA:
+live row updates in a SPA. Full stack, hop-by-hop:
 
 ```
-producer insert → mongo change-stream → stream-watcher
-  → redis PUBLISH <customer>:<scanner>:<view>
-    → f2-api push-subscriber
-      → WebSocket fanout (/ws/<customer>/<scanner>/<view>)
-        → SPA onmessage → setRows / setState
+┌────────────────────────────────────────────────────────────────────┐
+│ producer insert into Scanners.<slug>.Stream[*].SourceDbPattern      │
+│   .Collection on mongo8                                             │
+│                                                                     │
+│ ─► mongo change-stream (per-collection oplog tail)                  │
+│                                                                     │
+│   ─► stream-watcher (pm2 on web-backend-srvr-1 — one subscriber     │
+│                      per Scanners.*.Stream[*] entry; publishes      │
+│                      the raw doc envelope to redis)                 │
+│                                                                     │
+│     ─► redis PUBLISH <customer>:<scanner>:<view>                    │
+│                      (channel name = Scanners.<slug>.Stream[*]      │
+│                       .Channel; `op:*` fanout targets fleet         │
+│                       WS clients)                                   │
+│                                                                     │
+│       ─► f2-api push-subscriber (pm2 cluster, 16 workers;           │
+│                                   PSUBSCRIBE <customer>:*;          │
+│                                   routes by Scanners.<slug>.        │
+│                                   Stream[*].WsPath)                 │
+│                                                                     │
+│         ─► nginx on web-backend-srvr-1 — proxies branded-host       │
+│                                           /ws/<customer>/<scanner>/ │
+│                                           <view> → f2-api :8081     │
+│                                           on the private network    │
+│                                           (customer-owned domain    │
+│                                           case; f2-members Vercel   │
+│                                           rewrite handles non-      │
+│                                           branded hosts)            │
+│                                                                     │
+│           ─► SPA opens WebSocket to the branded host via same-      │
+│              origin socket.io polling → onmessage → setRows /       │
+│              setState                                               │
+└────────────────────────────────────────────────────────────────────┘
 ```
+
+**Config contract per hop:**
+
+| Hop | Source of truth | Edit site |
+|---|---|---|
+| producer destination | `Scanners.<slug>.Stream[*].SourceDbPattern` + `.Collection` | F2-ADMIN mongo |
+| change-stream subscription | stream-watcher auto-subscribes to every `Scanners.*.Stream[*]` entry on boot | `pm2 restart stream-watcher` after a Stream edit |
+| redis channel | `Scanners.<slug>.Stream[*].Channel` | F2-ADMIN mongo |
+| WS route | `Scanners.<slug>.Stream[*].WsPath` + `.RestPath` | F2-ADMIN mongo (`pm2 restart f2-api` on edit — `loadStreamViewsFromScanners` is boot-only) |
+| nginx proxy | `/etc/nginx/sites-enabled/f2-backend-srvr2-ai` (branded hosts) OR f2-members Vercel rewrite (non-branded) | ops |
+| SPA socket | matches the WsPath above; same-origin via branded host | SPA repo |
 
 Six separate failure modes each surface the same way to the SPA
 author: "WS handshake succeeds, zero rows ever arrive." Debug by
