@@ -514,11 +514,23 @@ live row updates in a SPA. Full stack, hop-by-hop:
 | Hop | Source of truth | Edit site |
 |---|---|---|
 | producer destination | `Scanners.<slug>.Stream[*].SourceDbPattern` + `.Collection` | F2-ADMIN mongo |
-| change-stream subscription | stream-watcher auto-subscribes to every `Scanners.*.Stream[*]` entry on boot | `pm2 restart stream-watcher` after a Stream edit |
+| **producer mongo cluster** | `Scanners.<slug>.Stream[*].MongoUriEnv` (env-name indirection, preferred) OR `.MongoUri` (plaintext) — **absent = default F2 mongo (MONGO_URL)**; present = alternate cluster that stream-watcher opens a dedicated client against | F2-ADMIN mongo + stream-watcher env (if MongoUriEnv) |
+| change-stream subscription | stream-watcher auto-subscribes to every `Scanners.*.Stream[*]` entry on boot, one change-stream per distinct cluster | `pm2 restart stream-watcher` after a Stream edit |
 | redis channel | `Scanners.<slug>.Stream[*].Channel` | F2-ADMIN mongo |
 | WS route | `Scanners.<slug>.Stream[*].WsPath` + `.RestPath` | F2-ADMIN mongo (`pm2 restart f2-api` on edit — `loadStreamViewsFromScanners` is boot-only) |
 | nginx proxy | `/etc/nginx/sites-enabled/f2-backend-srvr2-ai` (branded hosts) OR f2-members Vercel rewrite (non-branded) | ops |
 | SPA socket | matches the WsPath above; same-origin via branded host | SPA repo |
+
+> **Dedicated producer cluster trap** (Mike IT-F2-372 c/c8365637 2026-10-13):
+> this recipe originally assumed every scanner's producer writes to the main
+> F2 mongo cluster. It didn't call out the `MongoUri` escape hatch for
+> scanners whose producer lives elsewhere — so apai's first integration
+> attempt reached for an in-service socket.io bridge instead of extending
+> the fleet pipeline. Rule: if your producer writes to a non-default mongo
+> URI, set `Stream.MongoUriEnv` on the Scanners doc + populate the env var
+> on the stream-watcher pm2 service. The fleet §8.3 chain works unchanged
+> from that point. Do NOT roll a parallel socket.io bridge inside a per-
+> product service.
 
 Six separate failure modes each surface the same way to the SPA
 author: "WS handshake succeeds, zero rows ever arrive." Debug by
