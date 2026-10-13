@@ -822,6 +822,7 @@ Copy this section into each fleet-adopter PR:
 - [ ] Import `DataTierChip` from `f2tech-shared/data-tier-chip`.
 - [ ] Import `ExchangeAgreementsBanner` from `f2tech-shared/exchange-agreements-banner`.
 - [ ] Import `SessionDisplacedBanner` from `f2tech-shared/session-displaced-banner`.
+- [ ] Import `AccountMenu` from `f2tech-shared/account-menu` and render it in the toolbar (the canonical hover-reveal "account coin"). Pass `agreementUrl`, `email`, `firstName`, `lastName`, `onSignOut`, `onChangePassword`, and the hook's `openAgreements` as `onAgreementsClick`. Mike IT-F2-372 c/a7751a5b 2026-10-13: the shared coin is a hard requirement, not a per-SPA affordance — don't roll your own.
 - [ ] Import `useExchangeAgreementsPopup` from `f2tech-shared/exchange-agreements-popup` (see §12.0 for the one-import wire-up).
 - [ ] Set an `AGREEMENT_CUSTOMER` slug matching your product's key in `f2-admin-service2`. Threaded through sanitize probe, popup URL, banner dismiss key.
 - [ ] Wire the sanitize probe on mount (§3).
@@ -831,7 +832,7 @@ Copy this section into each fleet-adopter PR:
 - [ ] Add the silent-refresh path with a resettable staleClaim gate (§5.1).
 - [ ] Wire the re-login modal fallback (§5.2).
 - [ ] Wrap `<ExchangeAgreementsBanner>` in the `onClickCapture` interceptor (§12.2) so the built-in CTA link opens the popup instead of navigating out.
-- [ ] Pass the hook's `openAgreements` to your account menu / coin's `onAgreementsClick` AND to `<DataTierChip>`'s `onAgreementsClick` (§12.6). Same reference, three triggers → one popup.
+- [ ] Pass the hook's `openAgreements` to the shared `<AccountMenu>`'s `onAgreementsClick` AND to `<DataTierChip>`'s `onAgreementsClick` (§12.6). Same reference, three triggers → one popup.
 - [ ] Verify the seven chip states render with the EXACT copy in §1.1 (grep-diffable regression check).
 - [ ] Smoke: probe hits exactly once on mount; zero flash of Live Data for delayed users; displaced state reload clears session_id; **clicking the banner, the coin, and the chip all open the SAME popup, and the popup URL contains `/<slug>/` (not `?customer=`)**.
 
@@ -843,6 +844,9 @@ Copy this section into each fleet-adopter PR:
   `src/data-tier-chip.tsx`, `src/data-tier-banner.tsx`,
   `src/session-displaced-banner.tsx`, `src/exchange-agreements-banner.tsx`,
   `src/exchange-agreements-popup.tsx` (modal + `useExchangeAgreementsPopup` hook, §12.0),
+  `src/account-menu.tsx` (hover-reveal account coin + dropdown — Exchange
+  Agreements / Change password / Sign out; wired via `onAgreementsClick`
+  from `useExchangeAgreementsPopup`),
   `src/agreements.js`.
 - **Socket.io consumer wire-up:** `alpha-pivot-frontend`
   (Core4 SPA) — `src/App.tsx`. Probe useEffect around line 200;
