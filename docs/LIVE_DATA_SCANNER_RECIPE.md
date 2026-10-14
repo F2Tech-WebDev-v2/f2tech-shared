@@ -859,6 +859,13 @@ Copy this section into each fleet-adopter PR:
 
 Mike IT-F2-372 cid 8ec8b1a2 2026-10-14: before declaring a scanner done, run this smoke to confirm the four load-bearing pieces (sanitize probe reaches backend, slot claim fires, displacement surfaces, agreement flow works). Replace `<slug>` with your scanner\'s customer slug.
 
+> **Automated companion**: `scripts/smoke-scanner-entitlement.sh` runs steps 1-6 of the manual flow below as a shell script with pass/fail assertions. HTTP-based (needs only the test user\'s id_token); pass `--pm2-host web-backend-srvr-1` to also assert the backend log evidence in step 7. SSE push + agreement-approval remain manual (require browser EventSource and popup UI).
+>
+> ```bash
+> ./scripts/smoke-scanner-entitlement.sh <customer-slug> <scanner-slug> <bearer-id-token> \
+>   [--host scanners.<customer-host>] [--pm2-host web-backend-srvr-1] [--verbose]
+> ```
+
 **Prereqs** — test user has `<slug>` in their Cognito `custom:scanners` claim and a valid session on the SPA\'s branded host.
 
 ```bash
