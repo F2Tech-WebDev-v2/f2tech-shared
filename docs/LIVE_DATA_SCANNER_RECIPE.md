@@ -837,8 +837,11 @@ Copy this section into each fleet-adopter PR:
 - [ ] Import `AccountMenu` from `f2tech-shared/account-menu` and render it in the toolbar (the canonical hover-reveal "account coin"). Pass `agreementUrl`, `email`, `firstName`, `lastName`, `onSignOut`, `onChangePassword`, and the hook's `openAgreements` as `onAgreementsClick`. Mike IT-F2-372 c/a7751a5b 2026-10-13: the shared coin is a hard requirement, not a per-SPA affordance — don't roll your own.
 - [ ] Import `useExchangeAgreementsPopup` from `f2tech-shared/exchange-agreements-popup` (see §12.0 for the one-import wire-up).
 - [ ] Set an `AGREEMENT_CUSTOMER` slug matching your product's key in `f2-admin-service2`. Threaded through sanitize probe, popup URL, banner dismiss key.
-- [ ] Wire the sanitize probe on mount (§3).
-- [ ] Subscribe to all four WS events (§8) via same-origin socket.io polling.
+- [ ] Wire the sanitize probe on mount (§3). **Extract it as a reusable callback** (e.g. `probeAgreements()`) so it can fire from mount AND from the entitlement stream below — the recipe assumes this is one function with multiple triggers, not an inline fetch.
+- [ ] Subscribe to entitlement + displacement events — **pick ONE path, don't do both:**
+  - **(a) Member-scope SSE at `/rest/admin/users-live/stream` per §8.1 — DEFAULT for new SPAs.** Two-step mint: `POST /rest/admin/users-live/stream-token` (Bearer id_token) → `{token}` → `GET /rest/admin/users-live/stream?token=<t>` (`EventSource`). Re-mint + reopen every 55s (stream token is short-lived). On each message, parse `{op, reason, ...}` → if `op === "entitlement_changed"` or `"upsert"`, reset staleClaim + call `probeAgreements()`. Reference impl: `f2-gap-up-down src/api/dataTier.ts:276-323`. No per-scanner backend work needed — `/rest/admin/users-live/*` is a fleet endpoint on f2-admin-service.
+  - **(b) Socket.io at `/socket.io/` per §8 — only if your scanner already has an `alpha-pivot-service`-style backend subscribed to Redis `F2:USER_UPDATES`.** Four events (`entitlement_changed`, `live_access_changed`, `session_displaced`, `session_reclaimed`). Reference impl: `alpha-pivot-frontend src/App.tsx` ~line 500.
+  - Why SSE as default: an SPA without a redis-fanout backend (e.g. gap-up-down, apai) gets the same per-user events via SSE with zero backend work. Picking socket.io first forced AlphaPivotAI into redundant work discovering this (IT-F2-372 cids 9369a1e7 + 300fde42 2026-10-14 — "why are you constantly working against the existing ws common tools"). Updated here so the next scanner lands on SSE first.
 - [ ] Wire BroadcastChannel dedup handshake (§4.1).
 - [ ] Guard the chip with the load-order contract (§2). No flash of Live Data.
 - [ ] Add the silent-refresh path with a resettable staleClaim gate (§5.1).
