@@ -829,6 +829,8 @@ Reference impl: IT-F2-406 (`option-sniper-tape`), SPA ship
 
 ## 9. Adoption checklist for a new SPA
 
+> **Top-line contract**: live-slot gating + displacement is **customer-agnostic** in `LiveSessionService` — slot ownership is tracked by the `(user_sub, X-F2-Session-Id)` tuple, derived from Cognito `custom:scanners`. **There is NO per-customer "enable live slot" flag to flip.** The adopter-visible contract is: stamp `X-F2-Session-Id` on every `/rest/*` call + ship the `SessionDisplacedBanner`, and the backend fires displacement automatically for any user with your scanner in their `custom:scanners` claim. Mike IT-F2-372 cid 773b2b7c 2026-10-14 — AlphaPivotAI\'s displacement went green the moment the SPA started stamping the header, zero `Customers.<slug>` config touched (confirmed in pm2 log by f2-session cid 3b5fe332).
+
 Copy this section into each fleet-adopter PR:
 
 - [ ] Import `DataTierChip` from `f2tech-shared/data-tier-chip`.
@@ -852,6 +854,18 @@ Copy this section into each fleet-adopter PR:
 - [ ] Pass the hook's `openAgreements` to the shared `<AccountMenu>`'s `onAgreementsClick` AND to `<DataTierChip>`'s `onAgreementsClick` (§12.6). Same reference, three triggers → one popup.
 - [ ] Verify the seven chip states render with the EXACT copy in §1.1 (grep-diffable regression check).
 - [ ] Smoke: probe hits exactly once on mount; zero flash of Live Data for delayed users; displaced state reload clears session_id; **clicking the banner, the coin, and the chip all open the SAME popup, and the popup URL contains `/<slug>/` (not `?customer=`)**.
+
+### 9.1 Troubleshooting
+
+**Verify SPA probes actually reach backend BEFORE chasing config.** If the chip / banner / displacement isn\'t surfacing, the FIRST diagnostic is a backend log grep — not a backend-config audit, not a client-side state inspection. One-liner:
+
+```bash
+ssh web-backend-srvr-1 "pm2 logs f2-admin-service2 --lines 2000 --nostream | grep 'customer=<your-slug>'"
+```
+
+If zero hits in a 2-min window with the SPA active, the probe URL isn\'t resolving — chase that (vercel.json rewrite missing, Bearer missing, stale bundle, hard-refresh needed) before any backend fiddling. IT-F2-372 2026-10-14 lost cycles guessing at `Customers.apai` config flags when the real problem was Mike\'s probes weren\'t landing on backend at all — f2-session\'s pm2 grep in cid f0705348 immediately surfaced it.
+
+**Backend logs grouped by `aud` cross-contaminate across scanners** when the same QA identity exists in multiple pools (member-support, mta.qa, etc.). To isolate a scanner\'s probes, **filter by BOTH `aud` AND `customer=<slug>`** — not just one. IT-F2-372 cid f0705348 saw 10 Bearer-verifies on apai\'s aud all querying `customer=theo-trade`; that wasn\'t an SPA bug, it was the shared QA identity\'s theo-trade tabs mixing into apai\'s aud log window.
 
 ---
 
