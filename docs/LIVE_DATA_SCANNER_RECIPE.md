@@ -855,7 +855,46 @@ Copy this section into each fleet-adopter PR:
 - [ ] Verify the seven chip states render with the EXACT copy in §1.1 (grep-diffable regression check).
 - [ ] Smoke: probe hits exactly once on mount; zero flash of Live Data for delayed users; displaced state reload clears session_id; **clicking the banner, the coin, and the chip all open the SAME popup, and the popup URL contains `/<slug>/` (not `?customer=`)**.
 
-### 9.1 Troubleshooting
+### 9.1 End-to-end smoke test (verify gating + agreements)
+
+Mike IT-F2-372 cid 8ec8b1a2 2026-10-14: before declaring a scanner done, run this smoke to confirm the four load-bearing pieces (sanitize probe reaches backend, slot claim fires, displacement surfaces, agreement flow works). Replace `<slug>` with your scanner\'s customer slug.
+
+**Prereqs** — test user has `<slug>` in their Cognito `custom:scanners` claim and a valid session on the SPA\'s branded host.
+
+```bash
+# 1. In one shell: tail backend logs filtered to YOUR scanner's probes
+ssh web-backend-srvr-1 \
+  "pm2 logs f2-admin-service2 --nostream --lines 500 | \
+   grep -E 'customer=<slug>|LiveSessionService.*scanner=<slug>'"
+```
+
+```
+# 2. In the browser: open https://scanners.<customer-host>/scans/<slug> (Tab A).
+#    Wait ~5s. Log should show:
+#      ENTRY path=/rest/user/data-agreements?customer=<slug>&sanitize=1  (aud = <slug>'s client_id)
+#      LiveSessionService first-claim user=<sub> scanner=<slug> winner=<sidA>
+#    DataTierChip should render "Live Data" or current approved tier.
+
+# 3. Open a SECOND tab to the same URL (Tab B). Log should show:
+#      LiveSessionService first-claim user=<sub> scanner=<slug> winner=<sidB> displaced={<sidA>}
+#    Tab A's next sanitize probe (within ~55s via SSE push, or on
+#    BroadcastChannel 'slot_claimed' ping, whichever first) should:
+#      log: path=/rest/user/data-agreements?customer=<slug>&sanitize=1 → data_tier="delayed_displaced"
+#    Tab A UI: SessionDisplacedBanner appears with "ANOTHER SESSION IS LIVE" + reclaim CTA.
+
+# 4. Click "Reload to reclaim" on Tab A. Log should show:
+#      LiveSessionService first-claim user=<sub> scanner=<slug> winner=<newSidA> displaced={<sidB>}
+#    Tab B's next probe → data_tier="delayed_displaced" + its banner appears.
+
+# 5. Approve an exchange agreement for the test user on Tab A (via the
+#    Exchange Agreements popup). Backend fires entitlement_changed on the SSE
+#    stream; Tab A's SPA re-probes within ~1s; chip flips to realtime without
+#    a page reload.
+```
+
+**Pass criteria**: every log line in steps 2-5 shows AND every UI transition surfaces within the expected window. If any step is silent in the log, the SPA\'s probe URL isn\'t reaching backend — chase that per §9.2 before touching anything else.
+
+### 9.2 Troubleshooting
 
 **Verify SPA probes actually reach backend BEFORE chasing config.** If the chip / banner / displacement isn\'t surfacing, the FIRST diagnostic is a backend log grep — not a backend-config audit, not a client-side state inspection. One-liner:
 
