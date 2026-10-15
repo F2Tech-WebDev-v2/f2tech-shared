@@ -532,7 +532,7 @@ live row updates in a SPA. Full stack, hop-by-hop:
 > from that point. Do NOT roll a parallel socket.io bridge inside a per-
 > product service.
 
-Six separate failure modes each surface the same way to the SPA
+Ten separate failure modes each surface the same way to the SPA
 author: "WS handshake succeeds, zero rows ever arrive." Debug by
 walking the chain top-to-bottom; the mitigations below cover every
 one we've hit in production.
@@ -637,6 +637,91 @@ only to admins:
 
 Reference impl: `option-sniper-tape` / `os-smoke-producer` pm2
 service on `web-backend-srvr-1` (IT-F2-406).
+
+**(h) The dedup-DROP vs dedup-REPLACE trap in SPA `onmessage`** —
+the reflex consumer pattern:
+
+```ts
+const seen = new Set<string>();
+function onLiveDoc(doc) {
+  const id = doc._id;
+  if (id && seen.has(id)) return;   // ← SILENT-DROP
+  if (id) seen.add(id);
+  prepend(doc);
+}
+```
+
+is wrong. The fleet forwards both inserts AND updates (producer
+re-emits, ORATS/approval flips, late-arriving backfill, mongosh
+edits once the change-stream `$match` is widened per (i) all land
+as same-`_id` envelopes). Dedup-DROP silently discards every
+update, so the WS handshake looks healthy, incoming frames are
+flowing, and yet the UI stays stale — the exact "WS is broken"
+symptom that isn't actually a WS bug. Replace-by-`_id` instead:
+
+```ts
+function onLiveDoc(doc) {
+  const id = doc._id;
+  if (id && seen.has(id)) {
+    swapInBuffer(id, doc);
+    gridApi.applyTransaction({ update: [doc] });   // AG-Grid
+    return;
+  }
+  if (id) seen.add(id);
+  prepend(doc);
+  gridApi.applyTransaction({ add: [doc], addIndex: 0 });
+}
+```
+
+AG-Grid consumers must also set `getRowId: p =>
+String(p.data?._id)` on `gridOptions` — without it,
+`applyTransaction({update|remove})` can't locate the row and
+silently no-ops (same symptom as the dedup-DROP). Reference impl:
+`option-pit src/app/scans/rr-zeta/rr-zeta.component.ts`
+`on_live_append` (IT-F2-287 c/64f5cb5 2026-10-15).
+
+**(i) Change-stream `$match` MUST include update + replace, not
+just insert** — the fleet pipeline is designed to forward both
+inserts and updates to the SPA. The DLYD watcher at
+`f2-api/server.js:2522 attachDlydWatcher` uses
+`collection.watch([{ $match: { operationType: 'insert' } }])`
+which only matches INSERTs; UPDATE / REPLACE events don't reach
+the SPA at all. Stream-watcher's LIVE-path pipeline must apply
+the same discipline. Correct form:
+
+```js
+collection.watch(
+  [{ $match: { operationType: { $in: ['insert','update','replace'] } } }],
+  { fullDocument: 'updateLookup' },   // UPDATE envelope carries post-update shape
+);
+```
+
+`fullDocument:'updateLookup'` is required so UPDATE envelopes
+carry the post-update doc shape (otherwise `ev.fullDocument` is
+null on update events, making the fanout meaningless). Pairs with
+(h) on the SPA — the two patterns together are what make
+mongosh/Compass edits + producer re-emits propagate without a
+browser refresh.
+
+**(j) Diagnostic for "my probe always returns realtime"** —
+`DataAgreementsService.get_user_data_agreements` (f2-admin-service
+`src/services/data-agreements.service.ts` lines 573-579) short-
+circuits `data_tier` to `'realtime'` whenever a company /
+customer / wildcard override is active:
+
+```ts
+if (realtime_override.active) {
+  data_tier = 'realtime';
+  data_tier_reason = `override_${realtime_override.source}`;
+}
+```
+
+The override wins over per-user Cognito `custom:live_data_access`,
+so a user you've flipped to `false` still probes `realtime` as long
+as `F2-ADMIN.Customers.<slug>.data_tier_override.mode === 'realtime'`
+is in place. If every user on a given customer resolves to
+realtime regardless of per-user state, check the Customer doc
+override before chasing SPA / Cognito / Redis caches.
 
 ### 8.4 Static-alert scanners — poll-based delayed fanout
 
