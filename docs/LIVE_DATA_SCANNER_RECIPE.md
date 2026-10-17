@@ -259,7 +259,16 @@ modal (see §5).
 
 ---
 
-## 5. Post-approve live-flip: token refresh + re-login modal
+## 5. Post-approve live-flip: token refresh + fallback
+
+**Pick the fallback that matches your SPA's auth transport BEFORE you ship §5.1.** The silent-refresh path (§5.1) is the same for every adopter; what differs is what happens when the refresh fails and the backend still reports the user is approved/live. The recipe used to only document the modal (§5.2); on IT-F2-406 Mike c/9f615bdf 2026-10-17 the modal flashed in a branded-host SPA right after a user completed the agreement — the correct behavior there is a silent page reload. This section documents both so the next adopter picks the right one for their deploy shape.
+
+| SPA auth transport | Fallback | Why |
+|---|---|---|
+| **Branded-host** (f2-members Edge Middleware proxies `/rest/*` to f2-admin-service, httpOnly `f2_access`/`f2_id`/`f2_refresh` cookies land on the branded origin) | **Reload** (§5.1a) | A page reload re-runs the mount-time `mint-sid-from-cookies` &rarr; `redeem-session` bootstrap, which silently yields a fresh id_token carrying the just-approved claim. Zero user action. The modal would read as a false "you need to sign in again" prompt to a user who just signed in. |
+| **Bearer-only** (direct `*.vercel.app` loads, no cookie recovery available) | **Modal** (§5.2) | Browser can't recover a session from cookies the origin never saw. Explicit "Sign in again" is the only path. |
+
+**Checklist for picking:** does your SPA have `/rest/auth/mint-sid-from-cookies` as a working path from `window.location.origin`? If yes, use reload. If no, use modal. If you're not sure, open DevTools on your SPA, call `fetch('/rest/auth/mint-sid-from-cookies', {method:'POST', credentials:'include', body:'{}'})` — if that returns `{sid:...}` from a cold tab (no bearer in Authorization), you have cookie recovery and should use reload.
 
 ### 5.1 Silent token refresh
 
@@ -295,7 +304,57 @@ the token. Mid-session decline+re-approve leaves the chip frozen on the
 pre-flip tier (Mike fc7560e1 2026-09-17 report; fixed on
 IT-F2-391 c/ed7e536).
 
-### 5.2 Re-login modal fallback
+### 5.1a Reload fallback (branded-host SPAs — DEFAULT)
+
+If silent refresh (§5.1) fails and the backend still reports the user is approved/live, call `window.location.reload()`. **Three guards are mandatory to prevent reload-loop AND unwanted mount-time reloads:**
+
+0. **Fire only on a mid-session tier CHANGE, not on an initial-mount mismatch.** Mike IT-F2-406 c/f180cc69 2026-10-17: *"to be fair the page should only refresh when the data tier is changed while the page is loaded."* Track `prevTier` across probes (starts null; first probe populates it; subsequent probes compare). An initial-mount stale-token mismatch isn't actionable — nothing's changed since the user got here, and whichever tier their current token already resolves to is what they'll naturally see. Only the admin-just-approved / admin-just-declined / displacement-just-reclaimed events (which flip the tier mid-session) warrant a refresh or reload.
+1. **Skip the gate entirely when the realtime signal is driven by the customer-level realtime-override** (`sanitize probe .realtime_override.active === true` — set when `Customers.<slug>.data_tier_override.mode === 'realtime'`). The user's id_token NEVER carries `custom:live_data_access` in that case — Cognito knows nothing about the customer-level override — so no refresh will ever reconcile `cachedLive=false` with the probe's realtime tier. Mike IT-F2-406 c/a1ee1d9b 2026-10-17 hit this on option-sniper: Tape stuck reloading because the gate kept firing on every mount.
+2. **Persist the reload-fired flag in sessionStorage, not just an in-memory ref.** The in-memory ref dies with the reload it just triggered, so a flag that only lives in memory can't actually gate the second iteration — the next mount has a fresh ref initialized to `false`. Session storage survives reload, dies with tab close, so a user who closes and reopens the Tape gets a clean one-reload budget again.
+
+```jsx
+const staleReloadFiredRef = useRef(false);
+
+// Inside the probe effect:
+let prevTier = null;  // initial-mount baseline
+const probe = async () => {
+  const result = await probeDataAgreements();
+  if (cancelled || !result) return;
+  // ... setDataTier(result.dataTier), etc ...
+
+  const cachedLive = decodeLiveAccess();
+  const isApprovedAndLive = result.dataTier === 'realtime' || result.reviewStatus === 'approved';
+  const tierChanged = prevTier !== null && result.dataTier !== prevTier;
+  prevTier = result.dataTier;
+
+  if (tierChanged && !cachedLive && isApprovedAndLive && !staleClaim.refreshed && !result.realtimeOverride) {
+    staleClaim.refreshed = true;
+    const ok = await forceRefreshBundle();
+    if (ok) {
+      // Re-probe with fresh claims …
+    } else {
+      const RELOAD_FLAG_KEY = 'f2_stale_claim_reload_fired';
+      let alreadyReloaded = false;
+      try { alreadyReloaded = window.sessionStorage.getItem(RELOAD_FLAG_KEY) === '1'; } catch { /* ignore */ }
+      if (!staleReloadFiredRef.current && !alreadyReloaded) {
+        staleReloadFiredRef.current = true;
+        try { window.sessionStorage.setItem(RELOAD_FLAG_KEY, '1'); } catch { /* ignore */ }
+        window.location.reload();
+      } else if (import.meta.env?.DEV) {
+        console.warn('[stale-claim] refresh failed + reload budget spent — not reloading');
+      }
+    }
+  }
+};
+```
+
+Why reload works: a page reload re-runs the mount-time bootstrap ladder. On a branded host, `/rest/auth/mint-sid-from-cookies` returns a fresh sid, `/rest/auth/redeem-session` mints a fresh id_token carrying the just-approved `custom:live_data_access`, and the SPA renders the correct tier (live or delayed) naturally. User sees one flash of the page re-mounting; chip resolves to the right value on the next paint; no explicit sign-in prompt.
+
+**Reference impl:** `option-sniper-tape/src/OptionSniperTape.jsx` — the stale-claim gate inside the probe effect uses `staleReloadFiredRef` + `sessionStorage['f2_stale_claim_reload_fired']` as the two-level guard, and skips the gate entirely when `result.realtimeOverride` is true. No modal state, no `f2:live-signin-required` listener. Mike IT-F2-406 c/9f615bdf 2026-10-17 drove the reload-vs-modal pick; Mike c/a1ee1d9b 2026-10-17 drove both guards after shipping the reload without them triggered a loop.
+
+### 5.2 Re-login modal fallback (bearer-only SPAs)
+
+**Do NOT use this on branded-host SPAs** — use §5.1a reload instead. Only pick this fallback when `/rest/auth/mint-sid-from-cookies` is not a working path from your origin (direct `*.vercel.app` loads with no cookie recovery). Picking modal when reload is available flashes a false "you need to sign in again" prompt at a user who just signed in; Mike flagged this on IT-F2-406 c/9f615bdf 2026-10-17.
 
 If `refreshTokens()` fails AND the new state IS live (`live === true`),
 pop a non-blocking modal:
@@ -532,7 +591,7 @@ live row updates in a SPA. Full stack, hop-by-hop:
 > from that point. Do NOT roll a parallel socket.io bridge inside a per-
 > product service.
 
-Six separate failure modes each surface the same way to the SPA
+Ten separate failure modes each surface the same way to the SPA
 author: "WS handshake succeeds, zero rows ever arrive." Debug by
 walking the chain top-to-bottom; the mitigations below cover every
 one we've hit in production.
@@ -637,6 +696,91 @@ only to admins:
 
 Reference impl: `option-sniper-tape` / `os-smoke-producer` pm2
 service on `web-backend-srvr-1` (IT-F2-406).
+
+**(h) The dedup-DROP vs dedup-REPLACE trap in SPA `onmessage`** —
+the reflex consumer pattern:
+
+```ts
+const seen = new Set<string>();
+function onLiveDoc(doc) {
+  const id = doc._id;
+  if (id && seen.has(id)) return;   // ← SILENT-DROP
+  if (id) seen.add(id);
+  prepend(doc);
+}
+```
+
+is wrong. The fleet forwards both inserts AND updates (producer
+re-emits, ORATS/approval flips, late-arriving backfill, mongosh
+edits once the change-stream `$match` is widened per (i) all land
+as same-`_id` envelopes). Dedup-DROP silently discards every
+update, so the WS handshake looks healthy, incoming frames are
+flowing, and yet the UI stays stale — the exact "WS is broken"
+symptom that isn't actually a WS bug. Replace-by-`_id` instead:
+
+```ts
+function onLiveDoc(doc) {
+  const id = doc._id;
+  if (id && seen.has(id)) {
+    swapInBuffer(id, doc);
+    gridApi.applyTransaction({ update: [doc] });   // AG-Grid
+    return;
+  }
+  if (id) seen.add(id);
+  prepend(doc);
+  gridApi.applyTransaction({ add: [doc], addIndex: 0 });
+}
+```
+
+AG-Grid consumers must also set `getRowId: p =>
+String(p.data?._id)` on `gridOptions` — without it,
+`applyTransaction({update|remove})` can't locate the row and
+silently no-ops (same symptom as the dedup-DROP). Reference impl:
+`option-pit src/app/scans/rr-zeta/rr-zeta.component.ts`
+`on_live_append` (IT-F2-287 c/64f5cb5 2026-10-15).
+
+**(i) Change-stream `$match` MUST include update + replace, not
+just insert** — the fleet pipeline is designed to forward both
+inserts and updates to the SPA. The DLYD watcher at
+`f2-api/server.js:2522 attachDlydWatcher` uses
+`collection.watch([{ $match: { operationType: 'insert' } }])`
+which only matches INSERTs; UPDATE / REPLACE events don't reach
+the SPA at all. Stream-watcher's LIVE-path pipeline must apply
+the same discipline. Correct form:
+
+```js
+collection.watch(
+  [{ $match: { operationType: { $in: ['insert','update','replace'] } } }],
+  { fullDocument: 'updateLookup' },   // UPDATE envelope carries post-update shape
+);
+```
+
+`fullDocument:'updateLookup'` is required so UPDATE envelopes
+carry the post-update doc shape (otherwise `ev.fullDocument` is
+null on update events, making the fanout meaningless). Pairs with
+(h) on the SPA — the two patterns together are what make
+mongosh/Compass edits + producer re-emits propagate without a
+browser refresh.
+
+**(j) Diagnostic for "my probe always returns realtime"** —
+`DataAgreementsService.get_user_data_agreements` (f2-admin-service
+`src/services/data-agreements.service.ts` lines 573-579) short-
+circuits `data_tier` to `'realtime'` whenever a company /
+customer / wildcard override is active:
+
+```ts
+if (realtime_override.active) {
+  data_tier = 'realtime';
+  data_tier_reason = `override_${realtime_override.source}`;
+}
+```
+
+The override wins over per-user Cognito `custom:live_data_access`,
+so a user you've flipped to `false` still probes `realtime` as long
+as `F2-ADMIN.Customers.<slug>.data_tier_override.mode === 'realtime'`
+is in place. If every user on a given customer resolves to
+realtime regardless of per-user state, check the Customer doc
+override before chasing SPA / Cognito / Redis caches.
 
 ### 8.4 Static-alert scanners — poll-based delayed fanout
 
