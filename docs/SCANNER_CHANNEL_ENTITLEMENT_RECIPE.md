@@ -33,7 +33,8 @@ Mongo shape (lowercase `channels`):
   Stream: { ... },        // see SCANNER_TRACKING_RECIPE §1.2
 
   channels: [
-    { id: "<slug>.<number>", slug: "<channel-slug>", title: "<display name>" },
+    { id: "<slug>.<number>", slug: "<channel-slug>", title: "<display name>",
+      visible_to_roles: ["admin", "client", ...] }, // optional
     // e.g. { id: "os-osv2.1", slug: "lottery", title: "Lottery" }
     // ...
   ]
@@ -43,6 +44,8 @@ Mongo shape (lowercase `channels`):
 **`id` is the composite** — `<scanner-slug>.<channel-number>`. This is the string that lands in the user's `custom:notify_channels` CSV. Numbers are 1-indexed in the order channels were added.
 
 **`slug` + `title`** are display-only. `slug` matches whatever the SPA uses as its internal tab id. `title` is what renders in both the admin editor + the SPA sidebar.
+
+**`visible_to_roles`** (optional) — IT-F2-406 cid 2a461bc5 2026-10-17: when present + non-empty, only users whose `custom:role` is in the array see this channel. Absent / empty → visible to all entitled users (backwards-compat). Admins bypass regardless. The gate is enforced by f2-api on BOTH the WS fanout (close code 4403 with `code:'channel_role_not_visible'`) and the REST handler (returns `{rows:[], channel_role_not_visible:true, required_roles:[...]}`). Role strings are lowercased for comparison; common values: `admin`, `client`, `client_admin`, `member`.
 
 ### 1.2 User claim — `custom:notify_channels` (Cognito custom attribute)
 
