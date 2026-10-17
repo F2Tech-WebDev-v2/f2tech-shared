@@ -100,7 +100,7 @@ Authenticated. Returns the parsed `custom:notify_channels` filtered to the reque
 
 Numbers only (parsed off the `<slug>.<number>` composites). SPA diffs this against the catalog's channel numbers to decide which tabs render locked.
 
-**Open question** (TBD f2-session): should this endpoint read from the id_token's claim (fast, no Cognito round-trip) or from `AdminGetUser` server-side (always current, no stale-token caching)? Current implementation reads from id_token. On IT-F2-406 c/101c47fc Mike reported hard-refresh doesn't pick up admin changes because the refresh_token re-mints with stale claims — an `AdminGetUser` read would bypass that. Decision pending; this section will update.
+**Resolved** (f2-session IT-F2-406 c/101c47fc 2026-10-17): endpoint resolves against the **authoritative source** via `get_user_details(username, pool_id)` — Redis-first with Cognito `AdminGetUser` fallback. The id_token's claim is NOT the source of truth here; Cognito's `refresh_token` flow re-issues id_tokens with the claim snapshot from mint-time (not current attributes), so reading off the token stays stale across hard refreshes until the user signs out. Reading from the Redis cache (populated by every admin write via `cache_cognito_users` + Redis-first write path) gives live-ish propagation in &lt;1s typical. Fail-safe falls through to `userData.channels` only if the authoritative read throws (Redis blip, Cognito 429) — stale beats 500.
 
 ### 2.3 Admin write — `PUT /rest/admin/users/:username`
 
@@ -116,7 +116,7 @@ PUT /rest/admin/users/<username>
 }
 ```
 
-Writes land in `AuditEntitlementChanges` via the `ENTITLEMENT_ATTRS` set in `UsersController.updateUserAttributes` (f2-admin-service c/e1f41de added `custom:channels`; verify `custom:notify_channels` is in the set too).
+Writes land in `AuditEntitlementChanges` via the `ENTITLEMENT_ATTRS` set in `UsersController.updateUserAttributes` (f2-admin-service c/e1f41de + c/b0f194c include both `custom:channels` and `custom:notify_channels`). Writes also publish `op=entitlement_changed` on the fleet `F2:USER_UPDATES` redis channel with `changed_attrs.custom:notify_channels` → downstream SSE subscribers at `/rest/admin/users-live/stream` + scanner-side WS consumers (`f2-api`, `chart-service`, `alpha-pivot-service`) see the change in real time. SPA half: on `entitlement_changed` with `changed_attrs['custom:notify_channels']` present → re-probe `/api/scanners/:slug/entitled-channels` (resolves live state per §2.2) + reconnect WS. End-to-end latency admin-click → user-UI is typically 1-3s.
 
 ### 2.4 Pool-mismatch gotcha
 
@@ -179,7 +179,7 @@ eventSource.onmessage = (ev) => {
 
 Why four steps:
 
-1. **forceRefreshBundle** — swaps the in-memory id_token for a fresh one. **Open gotcha**: on standard Cognito, the refresh_token re-mints id_tokens with the claim snapshot taken at mint time, NOT current user attributes. If this is still happening after f2-session's resolution, step 1 is a no-op for the claim and only steps 2-4 matter. See §2.2 TBD.
+1. **forceRefreshBundle** — swaps the in-memory id_token for a fresh one. **Note**: on standard Cognito, the refresh_token re-mints id_tokens with the claim snapshot taken at mint time, NOT current user attributes. The id_token's `custom:notify_channels` CAN stay stale after `forceRefreshBundle` until the user signs out + back in. Step 1 is effectively a no-op for the entitlement claim; steps 2-4 carry the real freshness guarantee because §2.2 resolves against the Redis-cached authoritative state server-side.
 2. **setIdToken(fresh)** — React state change triggers any socket-opening effect to tear down + reconnect with new mint-ws-ticket calls. f2-api's 4403 gate at WS connect-time reads the new claim and admits the now-entitled channels.
 3. **f2:entitlement-changed CustomEvent** — the entitled-channels effect listens for this and refetches `/api/scanners/:slug/entitled-channels` → sidebar padlock state updates.
 4. **(implicit) `focus` listener** on the entitled-channels effect — backgrounded tabs refetch on next focus so they're not forever stale.
