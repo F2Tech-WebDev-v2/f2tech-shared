@@ -137,12 +137,15 @@ Payload:
 {"error": "channel_not_entitled", "code": "channel_not_entitled", "required_channel": "os-osv2.5"}
 ```
 
-**Backend mechanism** (f2-session c/537adca / b053cc9):
+**Backend mechanism** (f2-session c/537adca → b053cc9 → **0d4af52**):
 1. `Scanners.<id>.channels[]` captured on each view at `loadStreamViewsFromScanners` time (`scannerChannels` field on the view). No second mongo read at handshake.
 2. At WS connect, after `verifyWsTicket` + admin-role resolution, resolve `v.collection` → channel entry → required `<slug>.<number>` composite.
-3. If the user's `custom:notify_channels` doesn't include the composite + user isn't admin, send the error envelope + close 4403.
+3. **Resolve the user's `custom:notify_channels` LIVE** via `resolveLiveNotifyChannels(user, token)` helper — Redis-first against `F2:USER_CACHE:<pool_id>` (admin writes populate synchronously via `cache_cognito_users`), Cognito `AdminGetUser` fallback on cache miss, email reverse-lookup via `F2:USER_INDEX_BY_EMAIL` for legacy-pool UUID usernames. Fail-safe falls through to the id_token's embedded claim if the live resolve throws (Redis blip, Cognito 429) — stale beats 500.
+4. If the live-resolved claim doesn't include the composite + user isn't admin, send the error envelope + close 4403.
 
-**Backwards compat**: scanners whose Scanner doc has no `channels[]` skip the gate entirely.
+**Why live resolve** (f2-session c/0d4af52 2026-10-19, IT-F2-406): Cognito's `refresh_token` flow re-issues id_tokens with the claim snapshot from mint-time (NOT current user attributes). An embedded-claim read at WS handshake stays stale after an admin channel grant until the user signs out + back in — observed on `thebugger2000@yahoo.com` with all 13 channels entitled per the `/entitled-channels` REST endpoint but every WS 4403'ing. Live resolve mirrors the Redis-first + AdminGetUser pattern the entitled-channels REST endpoint already uses.
+
+**Backwards compat**: scanners whose Scanner doc has no `channels[]` skip the gate entirely. REST `/trades` + `/count` also live-resolve via the same helper for parity.
 
 ---
 
@@ -160,32 +163,51 @@ Admin writes to `custom:notify_channels` publish on the fleet `F2:USER_UPDATES` 
 
 `GET /rest/admin/users-live/stream?token=<short-lived-mint>` on `f2-admin-service` forwards the envelope to the authenticated user. Mint via `POST /rest/admin/users-live/stream-token` first (TTL 60s; re-mint every 55s).
 
-### 4.3 SPA SSE handler — four-step reaction
+### 4.3 SPA SSE handler — three-step reaction
 
 On receive of an `entitlement_changed` envelope whose `changed_attrs.custom:notify_channels` is set:
 
 ```js
-eventSource.onmessage = (ev) => {
+eventSource.onmessage = async (ev) => {
   const msg = JSON.parse(ev.data);
-  if (msg?.op === 'entitlement_changed') {
-    (async () => {
-      const refreshed = await forceRefreshBundle();      // 1. silent id-token refresh
-      if (refreshed) {
-        const fresh = getIdToken();
-        if (fresh) setIdToken(fresh);                     // 2. triggers sockets effect
+  if (msg?.op !== 'entitlement_changed') return;
+  // 1. Mint a fresh sid from the httpOnly cookies + redeem it, so the
+  //    new id_token carries LIVE Cognito claims (refresh_token flow
+  //    returns stale claims — see note below).
+  try {
+    const mintRes = await fetch('/rest/auth/mint-sid-from-cookies', {
+      method: 'POST', credentials: 'include',
+      headers: { 'content-type': 'application/json' }, body: '{}',
+    });
+    if (mintRes.ok) {
+      const { sid } = await mintRes.json();
+      if (sid) {
+        const redeemRes = await fetch('/rest/auth/redeem-session', {
+          method: 'POST', credentials: 'include',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ sid }),
+        });
+        if (redeemRes.ok) {
+          const bundle = await redeemRes.json();
+          if (bundle?.id_token) {
+            setTokenBundle(bundle);               // in-memory stash
+            localStorage.setItem(AUTH_TOKEN_KEY, bundle.id_token);
+            setIdToken(bundle.id_token);          // 2. triggers sockets effect
+          }
+        }
       }
-      window.dispatchEvent(new CustomEvent('f2:entitlement-changed'));  // 3. refetch entitled-channels
-    })();
-  }
+    }
+  } catch { /* fall through to #3 */ }
+  // 3. Refetch /api/scanners/:slug/entitled-channels for sidebar padlock state.
+  window.dispatchEvent(new CustomEvent('f2:entitlement-changed'));
 };
 ```
 
-Why four steps:
+Why three steps:
 
-1. **forceRefreshBundle** — swaps the in-memory id_token for a fresh one. **Note**: on standard Cognito, the refresh_token re-mints id_tokens with the claim snapshot taken at mint time, NOT current user attributes. The id_token's `custom:notify_channels` CAN stay stale after `forceRefreshBundle` until the user signs out + back in. Step 1 is effectively a no-op for the entitlement claim; steps 2-4 carry the real freshness guarantee because §2.2 resolves against the Redis-cached authoritative state server-side.
-2. **setIdToken(fresh)** — React state change triggers any socket-opening effect to tear down + reconnect with new mint-ws-ticket calls. f2-api's 4403 gate at WS connect-time reads the new claim and admits the now-entitled channels.
-3. **f2:entitlement-changed CustomEvent** — the entitled-channels effect listens for this and refetches `/api/scanners/:slug/entitled-channels` → sidebar padlock state updates.
-4. **(implicit) `focus` listener** on the entitled-channels effect — backgrounded tabs refetch on next focus so they're not forever stale.
+1. **mint-sid-from-cookies → redeem-session** — re-reads live Cognito attrs via the branded-host httpOnly cookies and mints a fresh id_token with current `custom:notify_channels`. **Do NOT use `forceRefreshBundle` here**: Cognito's `refresh_token` flow re-issues id_tokens with the claim snapshot from mint-time (NOT current attributes), so the "fresh" token stays stale and the subsequent `mint-ws-ticket` embeds the stale claim too. The mint-sid-from-cookies path is the same one hard-refresh uses and is the only in-session way to get live claims. (Mike IT-F2-406 c/xxx.har 2026-10-19 observed WS 4403 persistence until the SPA switched to this path.)
+2. **setIdToken(fresh)** — React state change triggers any socket-opening effect to tear down + reconnect with new mint-ws-ticket calls. f2-api's 4403 gate at WS connect-time now reads live claims (per §3's `resolveLiveNotifyChannels`, since c/0d4af52) so either the fresh-token path OR the backend live-resolve covers it; two defenses in depth.
+3. **f2:entitlement-changed CustomEvent** — the entitled-channels effect listens for this and refetches `/api/scanners/:slug/entitled-channels` → sidebar padlock state updates. Backgrounded tabs catch up on next `focus`.
 
 End-to-end latency: ~1-3s per f2-session's measurement (admin save → F2:USER_UPDATES → SSE → SPA chain).
 
