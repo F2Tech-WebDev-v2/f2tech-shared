@@ -1,4 +1,6 @@
-import { useCallback, useState, type ReactNode } from "react";
+import {
+  useCallback, useEffect, useRef, useState, type ReactNode,
+} from "react";
 
 /**
  * Exchange Agreements popup — canonical in-SPA modal for opening the
@@ -24,7 +26,30 @@ import { useCallback, useState, type ReactNode } from "react";
  * an external link in a new tab). No consumers imported the old React
  * version — Core4 built its own inline iframe modal, and that's the
  * pattern promoted to shared here.
+ *
+ * IT-F2-223 (f2-session kickoff 2026-10-20 cid 1ad08df6) — close-abandon
+ * UX: iframe posts {type:'f2-members:data-agreements:dirty-state', dirty}
+ * on every change + on mount (clean initial signal). Parent (us) tracks
+ * the latest flag and intercepts the X-close affordance. If dirty=false,
+ * close silently. If dirty=true, show a 3-button confirm — Cancel (stay
+ * open), Abandon (close + discard), Save (postMessage request-save →
+ * wait for subsequent dirty-state=false → close). Protocol fully
+ * documented in f2-members src/pages/DataAgreements.tsx + its PR #89 /
+ * #90 / #91 commit messages. Customer-agnostic — same iframe code runs
+ * for every branded customer.
  */
+
+/** postMessage protocol envelope types. Kept as const strings so a typo
+ *  on the parent side can't silently miss a real envelope. */
+const MSG_DIRTY_STATE = "f2-members:data-agreements:dirty-state";
+const MSG_REQUEST_SAVE = "f2-members:data-agreements:request-save";
+const MSG_SAVE_COMPLETE = "f2-members:data-agreements:save-complete";
+
+/** Internal pendingClose state. 'idle' = no close pending; 'confirm' =
+ *  dirty-close triggered the confirm dialog; 'awaiting-save' = user
+ *  picked Save on the confirm and we're waiting for the iframe to
+ *  broadcast dirty-state=false before actually closing. */
+type PendingClose = "idle" | "confirm" | "awaiting-save";
 
 export interface ExchangeAgreementsPopupProps {
   /** When true the modal is mounted + visible. */
@@ -34,14 +59,20 @@ export interface ExchangeAgreementsPopupProps {
    * `members.f2-tech.ai/<slug>/data-agreements?sid=&email=&first=&last=`).
    */
   url: string;
-  /** Fired when the user clicks the scrim, the close button, or Esc. */
+  /** Fired when the user clicks the scrim, the close button, or Esc.
+   *  The hook wraps this with the dirty-state confirm flow — callers of
+   *  the raw component without the hook get the pre-IT-F2-223 behavior
+   *  (immediate close, no confirm). */
   onClose: () => void;
   /** Optional aria-label override on the outer dialog + header title. */
   ariaLabel?: string;
+  /** Internal: set by the hook so the iframe ref is available for
+   *  postMessage(request-save). Not part of the public API. */
+  iframeRef?: React.RefObject<HTMLIFrameElement | null>;
 }
 
 export function ExchangeAgreementsPopup({
-  visible, url, onClose, ariaLabel = "Exchange Agreements",
+  visible, url, onClose, ariaLabel = "Exchange Agreements", iframeRef,
 }: ExchangeAgreementsPopupProps) {
   if (!visible) return null;
   return (
@@ -81,7 +112,7 @@ export function ExchangeAgreementsPopup({
           </button>
         </div>
         {url ? (
-          <iframe src={url} title={ariaLabel}
+          <iframe ref={iframeRef ?? undefined} src={url} title={ariaLabel}
             style={{ flex: 1, width: "100%", border: 0 }}
           />
         ) : (
@@ -92,6 +123,87 @@ export function ExchangeAgreementsPopup({
             Preparing Exchange Agreements form…
           </div>
         )}
+      </div>
+    </div>
+  );
+}
+
+/** The 3-button confirm dialog that pops in front of the agreements
+ *  modal when the user tries to close while dirty. Pure presentational
+ *  component; the hook owns the state machine. */
+interface AbandonConfirmProps {
+  visible: boolean;
+  onCancel: () => void;
+  onAbandon: () => void;
+  onSave: () => void;
+  /** When true the Save button is in flight — disable all three to
+   *  avoid double-dispatch. */
+  saving: boolean;
+}
+function AbandonConfirm({ visible, onCancel, onAbandon, onSave, saving }: AbandonConfirmProps) {
+  if (!visible) return null;
+  return (
+    <div
+      role="alertdialog"
+      aria-modal="true"
+      aria-label="Unsaved changes"
+      style={{
+        position: "fixed", inset: 0, zIndex: 10002,
+        background: "rgba(0,0,0,0.5)",
+        display: "flex", alignItems: "center", justifyContent: "center",
+        padding: 16,
+      }}
+      onClick={(e) => { if (e.target === e.currentTarget && !saving) onCancel(); }}
+    >
+      <div style={{
+        background: "#0e2238",
+        color: "#e2e8f0",
+        borderRadius: 8,
+        boxShadow: "0 20px 60px rgba(0,0,0,.6)",
+        width: "100%", maxWidth: 420,
+        padding: 20,
+        border: "1px solid #1e3c5a",
+      }}>
+        <h3 style={{ fontSize: 15, fontWeight: 600, margin: "0 0 8px 0" }}>
+          Unsaved changes
+        </h3>
+        <p style={{ fontSize: 13, color: "#cbd5e1", margin: "0 0 16px 0", lineHeight: 1.5 }}>
+          You have unsaved changes on your Exchange Agreement. What would you like to do?
+        </p>
+        <div style={{
+          display: "flex", gap: 8, justifyContent: "flex-end", flexWrap: "wrap",
+        }}>
+          <button type="button" onClick={onCancel} disabled={saving}
+            style={{
+              background: "transparent", border: "1px solid #334155",
+              color: "#cbd5e1", padding: "6px 12px", borderRadius: 4,
+              fontSize: 13, cursor: saving ? "not-allowed" : "pointer",
+              opacity: saving ? 0.55 : 1,
+            }}
+          >
+            Cancel
+          </button>
+          <button type="button" onClick={onAbandon} disabled={saving}
+            style={{
+              background: "transparent", border: "1px solid #7f1d1d",
+              color: "#fca5a5", padding: "6px 12px", borderRadius: 4,
+              fontSize: 13, cursor: saving ? "not-allowed" : "pointer",
+              opacity: saving ? 0.55 : 1,
+            }}
+          >
+            Abandon changes
+          </button>
+          <button type="button" onClick={onSave} disabled={saving}
+            style={{
+              background: "#2563eb", border: "1px solid #1d4ed8",
+              color: "#fff", padding: "6px 12px", borderRadius: 4,
+              fontSize: 13, cursor: saving ? "wait" : "pointer",
+              fontWeight: 600,
+            }}
+          >
+            {saving ? "Saving…" : "Save changes"}
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -156,7 +268,8 @@ export interface UseExchangeAgreementsPopupResult {
   popupNode: ReactNode;
   /** True when the popup is currently visible. */
   isOpen: boolean;
-  /** Programmatic close if you need it. */
+  /** Programmatic close if you need it. Runs the dirty-check confirm
+   *  the same way the X-button + scrim click + Esc do. */
   close: () => void;
 }
 
@@ -202,6 +315,64 @@ export function useExchangeAgreementsPopup(
 
   const [visible, setVisible] = useState(false);
   const [url, setUrl] = useState("");
+
+  // Dirty-state tracker — flipped by the iframe's postMessage. Starts
+  // false (iframe emits a clean signal on mount; mirror that default so
+  // a close before the first message doesn't gate on stale truthy).
+  const [isDirty, setIsDirty] = useState(false);
+  const [pendingClose, setPendingClose] = useState<PendingClose>("idle");
+  const iframeRef = useRef<HTMLIFrameElement | null>(null);
+
+  // Reset state whenever we re-open the modal. Prevents a prior session's
+  // dirty flag or stale pendingClose from immediately gating the first
+  // close of a fresh session.
+  useEffect(() => {
+    if (visible) {
+      setIsDirty(false);
+      setPendingClose("idle");
+    }
+  }, [visible]);
+
+  // Listen for the iframe's dirty-state + save-complete envelopes. Does
+  // not filter by origin: f2-members runs on the SAME branded host as
+  // the parent SPA when useBrandedHost=true (default), and on the
+  // configured membersOrigin otherwise. The envelope type prefix is
+  // specific enough that a mismatched posting from another frame would
+  // have had to use the exact "f2-members:data-agreements:" prefix.
+  useEffect(() => {
+    if (typeof window === "undefined") return undefined;
+    const onMessage = (ev: MessageEvent) => {
+      const data = ev.data;
+      if (!data || typeof data !== "object") return;
+      const t = (data as { type?: unknown }).type;
+      if (t === MSG_DIRTY_STATE) {
+        const d = (data as { dirty?: unknown }).dirty;
+        setIsDirty(!!d);
+      } else if (t === MSG_SAVE_COMPLETE) {
+        const ok = (data as { ok?: unknown }).ok === true;
+        // Save finished. On success the iframe will ALSO broadcast
+        // dirty-state=false which triggers the pending-close finisher
+        // below; we only act on save-complete when ok=false (hard
+        // failure like "form not mounted" — bail from awaiting-save
+        // and drop back to the confirm so the user can decide again).
+        if (!ok) {
+          setPendingClose((p) => (p === "awaiting-save" ? "confirm" : p));
+        }
+      }
+    };
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, []);
+
+  // When Save was clicked on the confirm, we're waiting for the iframe
+  // to flip isDirty back to false. The moment it does, finalize the
+  // close. Separate effect so we don't re-fire if the user re-dirties.
+  useEffect(() => {
+    if (pendingClose === "awaiting-save" && !isDirty) {
+      setVisible(false);
+      setPendingClose("idle");
+    }
+  }, [pendingClose, isDirty]);
 
   const buildParams = useCallback((sid?: string) => {
     const p = new URLSearchParams();
@@ -249,11 +420,62 @@ export function useExchangeAgreementsPopup(
     setVisible(true);
   }, [customerSlug, membersOrigin, useBrandedHost, guardedFetch, buildParams]);
 
-  const close = useCallback(() => setVisible(false), []);
+  // The gated close. Any X / scrim / Esc / programmatic .close() lands
+  // here. If the iframe says it's dirty, pop the confirm instead of
+  // actually closing; otherwise close straight away.
+  const gatedClose = useCallback(() => {
+    if (isDirty) {
+      setPendingClose("confirm");
+    } else {
+      setVisible(false);
+    }
+  }, [isDirty]);
+
+  const handleCancel = useCallback(() => setPendingClose("idle"), []);
+
+  const handleAbandon = useCallback(() => {
+    // Discard — close immediately. Reset local dirty tracker so the
+    // next open doesn't inherit a stale truthy from this session.
+    setIsDirty(false);
+    setPendingClose("idle");
+    setVisible(false);
+  }, []);
+
+  const handleSave = useCallback(() => {
+    // Ask the iframe to save. The iframe runs its own validation + the
+    // real POST + flips isDirty back to false on success — that flip
+    // is what finalizes the close (see pendingClose effect above).
+    // On hard failures (form not mounted / requestSubmit threw) the
+    // iframe posts save-complete ok:false, which drops us back to
+    // 'confirm'.
+    setPendingClose("awaiting-save");
+    const win = iframeRef.current?.contentWindow;
+    if (win) {
+      try { win.postMessage({ type: MSG_REQUEST_SAVE }, "*"); } catch {
+        setPendingClose("confirm");
+      }
+    } else {
+      setPendingClose("confirm");
+    }
+  }, []);
 
   const popupNode = (
-    <ExchangeAgreementsPopup visible={visible} url={url} onClose={close} />
+    <>
+      <ExchangeAgreementsPopup
+        visible={visible}
+        url={url}
+        onClose={gatedClose}
+        iframeRef={iframeRef}
+      />
+      <AbandonConfirm
+        visible={visible && pendingClose !== "idle"}
+        saving={pendingClose === "awaiting-save"}
+        onCancel={handleCancel}
+        onAbandon={handleAbandon}
+        onSave={handleSave}
+      />
+    </>
   );
 
-  return { openAgreements, popupNode, isOpen: visible, close };
+  return { openAgreements, popupNode, isOpen: visible, close: gatedClose };
 }
