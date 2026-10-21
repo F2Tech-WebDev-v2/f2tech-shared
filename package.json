@@ -93,6 +93,10 @@
     "./ticker-search-box": {
       "types": "./src/ticker-search-box.tsx",
       "default": "./src/ticker-search-box.tsx"
+    },
+    "./sign-out": {
+      "types": "./src/sign-out.ts",
+      "default": "./src/sign-out.ts"
     }
   },
   "files": [
