@@ -91,6 +91,15 @@ export interface AccountMenuItem {
           <div *ngIf="email" [style.font-size.px]="displayName ? 11 : 13" [style.color]="displayName ? 'var(--brand-text-muted, #9ca3af)' : 'var(--brand-text-primary, #e5e7eb)'" [style.margin-top.px]="displayName ? 2 : 0" style="line-height:1.2;word-break:break-all">{{ email }}</div>
         </div>
         <a
+          *ngIf="resolvedDashboardUrl"
+          [href]="resolvedDashboardUrl"
+          role="menuitem"
+          (click)="open = false"
+          style="display:block;padding:10px 16px;font-size:14px;color:var(--brand-text-primary, #e5e7eb);text-decoration:none;cursor:pointer"
+          onmouseover="this.style.background='var(--brand-panel-bg-hover, rgba(255,255,255,0.08))'"
+          onmouseout="this.style.background='transparent'"
+        >Dashboard</a>
+        <a
           *ngIf="agreementUrl"
           [href]="agreementUrl"
           target="_blank"
@@ -159,8 +168,23 @@ export class AccountMenuComponent {
   @Input() firstName: string | null = null;
   @Input() lastName: string | null = null;
   @Input() customItems: AccountMenuItem[] = [];
+  /**
+   * Dashboard menu item destination — the branded scanner picker. Default
+   * '/?reset_scanner=1' (f2-members Edge Middleware Job 3 recognizes this
+   * as "clear f2_scanner cookie + 302 to clean /" so the branded dashboard
+   * renders the picker instead of the SPA-redirect rescue bouncing the
+   * user back to the scanner they were in). Pass `null` on a standalone
+   * SPA not mounted under a branded host to hide the item. Mike IT-F2-406
+   * 2026-10-21: fleet-wide, let the user bail from a scanner back to the
+   * picker without having to sign out first.
+   */
+  @Input() dashboardUrl: string | null | undefined = undefined;
   @Output() signOut = new EventEmitter<void>();
   @Output() changePassword = new EventEmitter<void>();
+
+  get resolvedDashboardUrl(): string | null {
+    return this.dashboardUrl === undefined ? '/?reset_scanner=1' : this.dashboardUrl;
+  }
 
   open = false;
   hover = false;

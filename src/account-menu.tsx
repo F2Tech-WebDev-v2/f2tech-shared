@@ -38,6 +38,18 @@ export interface AccountMenuProps {
   customItems?: AccountMenuItem[];
   onSignOut: () => void;
   onChangePassword: () => void;
+  /**
+   * Dashboard menu item destination — the branded scanner picker. Defaults
+   * to '/?reset_scanner=1', which f2-members Edge Middleware Job 3
+   * recognizes as "clear f2_scanner cookie + 302 to clean /" so the
+   * branded dashboard renders the picker instead of Job 3's SPA-redirect
+   * rescue (which bounces the user back to the scanner they were in).
+   * Pass null to hide the item (standalone SPAs not mounted under a
+   * branded host); pass an explicit string to override the destination.
+   * Mike IT-F2-406 2026-10-21: fleet-wide, let the user bail from a
+   * scanner back to the picker without having to sign out first.
+   */
+  dashboardUrl?: string | null;
 }
 
 /**
@@ -62,8 +74,11 @@ function safeEmail(value: string | null | undefined): string | null {
   return s;
 }
 
-export function AccountMenu({ agreementUrl, email: emailIn, firstName, lastName, customItems, onSignOut, onChangePassword }: AccountMenuProps) {
+export function AccountMenu({ agreementUrl, email: emailIn, firstName, lastName, customItems, onSignOut, onChangePassword, dashboardUrl }: AccountMenuProps) {
   const email = safeEmail(emailIn);
+  // Default-on, undefined === use fleet-standard destination. Explicit
+  // null opts out; any string overrides the destination.
+  const resolvedDashboardUrl = dashboardUrl === undefined ? '/?reset_scanner=1' : dashboardUrl;
   const [hover, setHover] = useState(false);
   const [focus, setFocus] = useState(false);
   const [open, setOpen] = useState(false);
@@ -243,6 +258,18 @@ export function AccountMenu({ agreementUrl, email: emailIn, firstName, lastName,
                 </div>
               )}
             </div>
+          )}
+          {resolvedDashboardUrl && (
+            <a
+              href={resolvedDashboardUrl}
+              role="menuitem"
+              onClick={() => setOpen(false)}
+              style={itemBase}
+              onMouseOver={(e) => (e.currentTarget.style.background = itemHoverBg)}
+              onMouseOut={(e) => (e.currentTarget.style.background = 'transparent')}
+            >
+              Dashboard
+            </a>
           )}
           {agreementUrl && (
             <a
