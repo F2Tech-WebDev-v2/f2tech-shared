@@ -273,6 +273,238 @@ function recomputeFaviconState() {
 
 ---
 
+## Per-customer configured sound (brand-config driven)
+
+The sections above describe the **hash-driven** library — one call site, voice derived deterministically from a `key` hash, no per-customer tuning. There is a sibling pattern used by `/admin/error-reports` where the admin explicitly picks the instrument + note **per customer** on the backend, and every SPA that cares plays that same configured tone whenever an event for that customer lands. This pattern is portable to any customer-aware SPA — the lib is customer and scanner agnostic; the SPA just supplies a customer slug.
+
+Extracted from `f2-admin/src/app/admin/shared/sound-player.service.ts` + `sound-settings-dialog.component.ts` into `f2tech-shared/src/brand-alert-sound.{d.ts,js}` + `brand-sound-settings-dialog.{component.ts,tsx}` per IT-F2-451 (Mike chat 2026-10-22).
+
+### Install (one-time)
+
+```ts
+import {
+  configureBrandSound,
+  playForCustomer,
+  isBrandSoundMuted,
+  setBrandSoundMuted,
+  getBrandSoundVolume,
+  setBrandSoundVolume,
+} from 'f2tech-shared/brand-alert-sound';
+
+// Call ONCE at app startup — e.g. React root or Angular AppComponent constructor.
+configureBrandSound({
+  apiUrl: '/rest',          // base path up to and including /rest (same-origin) or 'https://admin.f2-tech.ai/rest' (cross-origin)
+  storagePrefix: 'myapp',   // namespaces the mute + volume localStorage keys
+  // Everything else is optional with sensible defaults:
+  // configField: 'error_alert_sound',  // field on brand-config to read; swap for a sibling sub-doc if a parallel channel is needed
+  // cacheTtlMs: 60_000,
+  // autoReleaseMs: 5000,
+  // warmupDelayS: 1.0,
+  // defaultVolume: 70,
+  // defaultMuted: false,
+  // defaultSlug: 'f2',
+});
+```
+
+`configureBrandSound()` is idempotent; call it again anytime to re-tune. It re-hydrates persisted mute + volume state against the possibly-new storagePrefix.
+
+### Firing a sound
+
+```ts
+// Per customer-scoped event. Fire-and-forget. No-ops when muted / brand-config
+// returns null-or-disabled / autoplay blocked / SSR.
+playForCustomer(customer.slug);
+
+// Reports that lack a customer slug fall through to defaultSlug ('f2' by default),
+// so uncategorized rows still make a sound if the admin enabled it on the f2 row.
+playForCustomer(null);  // → tries 'f2' company doc
+```
+
+The library:
+
+1. Checks the operator mute toggle (`isBrandSoundMuted`).
+2. Fetches `/rest/api/brand-config?slug=<slug>` and reads `.error_alert_sound` (or the custom `configField`).
+3. If the sub-doc is `{ enabled: true, instrument, note }`, synthesizes a one-shot ADSR tone via Web Audio.
+4. Scales the output by the operator's volume (0..100).
+5. Caches the brand-config result for 60s so a burst of events for the same customer doesn't hammer the API.
+6. Auto-releases the AudioContext after 5s of silence so the OS "tab is playing sound" indicator clears.
+
+### Toolbar mute + volume (two-element pattern)
+
+Any SPA that wires this feature should surface two operator controls up in the toolbar: a mute toggle and a volume slider. These live in `localStorage` under the configured prefix, so every operator can tune their own ears without touching backend config.
+
+Angular:
+
+```ts
+import {
+  isBrandSoundMuted,
+  setBrandSoundMuted,
+  getBrandSoundVolume,
+  setBrandSoundVolume,
+} from 'f2tech-shared/brand-alert-sound';
+
+@Component({ /* ... */ })
+export class MyPageComponent {
+  get muted() { return isBrandSoundMuted(); }
+  toggleMute() { setBrandSoundMuted(!this.muted); }
+  volume() { return getBrandSoundVolume(); }
+  onVolumeChange(v: number) { setBrandSoundVolume(v); }
+}
+```
+
+Template:
+
+```html
+<button type="button" (click)="toggleMute()" [title]="muted ? 'Unmute alert sounds' : 'Mute alert sounds'">
+  <i class="fa-solid" [class.fa-volume-high]="!muted" [class.fa-volume-xmark]="muted"></i>
+</button>
+<input type="range" min="0" max="100" step="1"
+       [value]="volume()" (input)="onVolumeChange(+$any($event.target).value)" />
+```
+
+React (similar shape, read current state on each render):
+
+```tsx
+import {
+  isBrandSoundMuted,
+  setBrandSoundMuted,
+  getBrandSoundVolume,
+  setBrandSoundVolume,
+} from 'f2tech-shared/brand-alert-sound';
+
+function SoundToolbar() {
+  const [, bump] = useState(0);
+  const rerender = () => bump((n) => n + 1);
+  return (
+    <>
+      <button onClick={() => { setBrandSoundMuted(!isBrandSoundMuted()); rerender(); }}>
+        {isBrandSoundMuted() ? '🔇' : '🔔'}
+      </button>
+      <input type="range" min={0} max={100} value={getBrandSoundVolume()}
+             onChange={(e) => { setBrandSoundVolume(+e.currentTarget.value); rerender(); }} />
+    </>
+  );
+}
+```
+
+### Settings dialog (operator-facing)
+
+The library ships a ready-to-mount Settings dialog that lists every customer and lets the operator pick instrument + note per row with live preview + debounced auto-save. Mount from a toolbar button next to the mute toggle.
+
+Angular (standalone import):
+
+```ts
+import { BrandSoundSettingsDialogComponent } from 'f2tech-shared/brand-sound-settings-dialog.component';
+
+@Component({ imports: [BrandSoundSettingsDialogComponent, /* ... */] })
+export class MyPageComponent {
+  showSoundSettings = false;
+  openSoundSettings() { this.showSoundSettings = true; }
+}
+```
+
+Template:
+
+```html
+<button type="button" (click)="openSoundSettings()" title="Sound settings">
+  <i class="fa-solid fa-music"></i>
+</button>
+
+<brand-sound-settings-dialog
+  *ngIf="showSoundSettings"
+  apiBase="/rest"
+  customersListPath="/admin/customer-directory/"
+  customerPutPathPrefix="/admin/customer-directory/"
+  (close)="showSoundSettings = false">
+</brand-sound-settings-dialog>
+```
+
+React:
+
+```tsx
+import { useState } from 'react';
+import { BrandSoundSettingsDialog } from 'f2tech-shared/brand-sound-settings-dialog';
+
+function MyPage() {
+  const [soundOpen, setSoundOpen] = useState(false);
+  return (
+    <>
+      <button onClick={() => setSoundOpen(true)}>🎵</button>
+      {soundOpen && (
+        <BrandSoundSettingsDialog
+          apiBase="/rest"
+          customersListPath="/admin/customer-directory/"
+          customerPutPathPrefix="/admin/customer-directory/"
+          onClose={() => setSoundOpen(false)}
+        />
+      )}
+    </>
+  );
+}
+```
+
+The dialog honors the `configField` prop if a consumer needs the sub-doc stored under a different field (e.g. `scanner_alert_sound` for scanner-scoped alerts). On every save it invalidates the per-slug brand-config cache so the next `playForCustomer` for that customer picks up the new tone immediately.
+
+### Backend contract — what the Customer doc stores
+
+Every row in `F2-ADMIN.Customers` can carry:
+
+```json
+{
+  "_id": "<customer slug>",
+  "name": "Display Name",
+  "error_alert_sound": {
+    "enabled": true,
+    "instrument": "acoustic_grand_piano",
+    "note": "C5"
+  }
+}
+```
+
+The `f2` row acts as the fleet default — admins should configure it so events without a customer slug still make a distinguishable sound. `instrument` is one of the keys in `BRAND_SOUND_INSTRUMENTS`; `note` is one of `BRAND_SOUND_NOTES` (three octaves of naturals + sharps).
+
+`/rest/api/brand-config?slug=<slug>` already surfaces this sub-doc in the admin SPA's extraction source; the Settings dialog PUTs to `/rest/admin/customer-directory/<slug>` with a minimal body `{ error_alert_sound: {...} }`. The backend's `update()` normalizes `$set` only on the supplied field, so other Customer-doc fields are undisturbed.
+
+### Instrument + note knobs
+
+The 12 instruments map to Web Audio oscillator type + ADSR envelope so operators can pick timbres that are distinguishable without the bundle weight of a sampler library. Current voices:
+
+| Instrument | Oscillator | Attack | Release | Peak gain |
+|---|---|---|---|---|
+| Piano (default) | triangle | 5ms | 1.0s | 0.40 |
+| Tubular bells | sine | 5ms | 1.8s | 0.30 |
+| Marimba | sine | 5ms | 0.4s | 0.40 |
+| Xylophone | sine | 2ms | 0.25s | 0.50 |
+| Glockenspiel | triangle | 5ms | 1.2s | 0.30 |
+| Vibraphone | sine | 30ms | 2.0s | 0.30 |
+| Celesta | triangle | 5ms | 0.8s | 0.40 |
+| Music box | triangle | 5ms | 0.6s | 0.35 |
+| Kalimba | sine | 5ms | 0.8s | 0.40 |
+| Steel drums | triangle | 10ms | 1.0s | 0.40 |
+| Church organ | sawtooth | 50ms | 0.4s | 0.20 |
+| Harpsichord | square | 5ms | 0.35s | 0.20 |
+
+Notes span C3 → B6 (four octaves of 12 naturals + sharps). Pairs of instrument × note give the admin ~576 distinguishable per-customer slots.
+
+### Customer + scanner agnostic
+
+Nothing in the library assumes a specific customer or scanner — the slug is just a cache key + the lookup argument on brand-config. The same install pattern works for:
+
+- Admin event feeds (error-reports — the extraction source)
+- Per-scanner tape SPAs (any customer the user is entitled to)
+- Multi-tenant operator surfaces (e.g. a client_admin viewing their own customer's events)
+- Fleet-wide dashboards (fall through `playForCustomer(null)` to the `f2` default row)
+
+Each SPA picks its own `storagePrefix` so operator-level mute + volume don't bleed across SPAs, but the brand-config they read is shared — one admin tune reaches every SPA that reads the same field.
+
+### Which pattern should I pick?
+
+If every signal in your SPA already carries a stable **key** (an object id, ticket id, asset id) and the user wants ear-memory for that object, use the hash-driven lib described earlier in this doc — `notifyAlert({ key, label, summary, reason })`.
+
+If signals are grouped by **customer** (or any other operator-tuned axis) and the operator wants to pick the tone explicitly, use `brand-alert-sound` with the Settings dialog. The two patterns coexist cleanly — one SPA can import both and route different event sources through each.
+
+---
+
 ## Original design origin
 
 Extracted from IT-F2-353 (F2 Issue Tracker) after ~40 iteration items — chronological highlights so you can `git blame` or ticket-drill the "why" on any sharp edge:
