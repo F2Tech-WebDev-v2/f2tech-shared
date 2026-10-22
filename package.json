@@ -1,6 +1,6 @@
 {
   "name": "f2tech-shared",
-  "version": "0.29.0",
+  "version": "0.30.0",
   "description": "Shared cross-project helpers for the F2 Tech web stack — single source of truth for TLD detection, per-TLD URL handling, opaque-sid SSO handoff, per-customer agreements / data-tier flags, and canonical UI components (data-tier banner, exchange-agreements popup/banner, account-menu coin) so changes land in one place instead of N repos.",
   "type": "module",
   "main": "./src/index.js",
@@ -37,6 +37,18 @@
     "./alert-sound": {
       "types": "./src/alert-sound.d.ts",
       "import": "./src/alert-sound.js"
+    },
+    "./brand-alert-sound": {
+      "types": "./src/brand-alert-sound.d.ts",
+      "import": "./src/brand-alert-sound.js"
+    },
+    "./brand-sound-settings-dialog.component": {
+      "types": "./src/brand-sound-settings-dialog.component.ts",
+      "default": "./src/brand-sound-settings-dialog.component.ts"
+    },
+    "./brand-sound-settings-dialog": {
+      "types": "./src/brand-sound-settings-dialog.tsx",
+      "default": "./src/brand-sound-settings-dialog.tsx"
     },
     "./data-tier-banner.component": {
       "types": "./src/data-tier-banner.component.ts",
