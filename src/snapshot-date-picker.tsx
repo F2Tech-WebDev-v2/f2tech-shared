@@ -122,36 +122,6 @@ function isoOf(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
-/**
- * Convert `#rrggbb` / `#rrggbbaa` / `rgb(…)` / `rgba(…)` to an rgba()
- * string with the given alpha. Non-color inputs (CSS variables,
- * `transparent`, named colors) fall through as-is so consumers that
- * theme via `var(--brand-primary)` get the raw var back in the output
- * and the browser handles painting with its own alpha-less rendering
- * (slight visual regression on var themes but no crash).
- */
-function _tintColor(input: string, alpha: number): string {
-  const a = Math.max(0, Math.min(1, alpha));
-  const s = String(input || '').trim();
-  // #rrggbb or #rgb
-  let m = /^#([0-9a-f]{3})$/i.exec(s);
-  if (m) {
-    const [r, g, b] = m[1].split('').map((h) => parseInt(h + h, 16));
-    return `rgba(${r},${g},${b},${a})`;
-  }
-  m = /^#([0-9a-f]{6})$/i.exec(s);
-  if (m) {
-    const r = parseInt(m[1].slice(0, 2), 16);
-    const g = parseInt(m[1].slice(2, 4), 16);
-    const b = parseInt(m[1].slice(4, 6), 16);
-    return `rgba(${r},${g},${b},${a})`;
-  }
-  m = /^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i.exec(s);
-  if (m) return `rgba(${m[1]},${m[2]},${m[3]},${a})`;
-  // CSS var / named color — browser handles its own paint; return as-is.
-  return s;
-}
-
 const MONTH_NAMES = [
   'January', 'February', 'March', 'April', 'May', 'June',
   'July', 'August', 'September', 'October', 'November', 'December',
