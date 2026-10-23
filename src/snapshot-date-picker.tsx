@@ -412,21 +412,31 @@ export function SnapshotDatePicker(props: SnapshotDatePickerProps) {
                 color = theme.accentText;
                 fontWeight = 700;
               } else if (isToday) {
-                // tint = accent with ~22% alpha so bg is readable but clearly
-                // marked. Falls back silently if accent is a CSS var — the
-                // alpha-channel append works for #rrggbb and rgb(…) literals.
-                bg = _tintColor(theme.accent, 0.22);
+                // tint = accent with ~35% alpha so bg is unambiguous even
+                // on dark Core4-style surfaces. Mike c/6b12213b 2026-10-23:
+                // "no dates are highlighted as selectable" — bumped from
+                // 0.22 to 0.35 so the "today" fill is clearly readable
+                // alongside the AVAILABLE tier below.
+                bg = _tintColor(theme.accent, 0.35);
                 color = theme.dayText;
                 outline = `2px solid ${theme.accent}`;
                 fontWeight = 700;
               } else if (clickable) {
-                // Subtle bg so clickable in-month cells stand out from
-                // disabled ones. Uses the muted color at ~18% alpha —
-                // works against popupBg without introducing new theme keys.
-                bg = _tintColor(theme.muted, 0.18);
+                // Mike c/6b12213b 2026-10-23 — the prior 18% muted tint
+                // was invisible against Core4's dark popup bg; bumped
+                // alpha to 0.40 and layered a 1px accent-tint border so
+                // AVAILABLE cells stand out at a glance even on surfaces
+                // where muted ≈ popupBg. Border alpha stays low (0.45)
+                // so SELECTED (solid accent) and TODAY (2px solid border)
+                // remain visually dominant.
+                bg = _tintColor(theme.muted, 0.40);
                 color = theme.dayText;
+                outline = `1px solid ${_tintColor(theme.accent, 0.45)}`;
                 fontWeight = 600;
               } else {
+                // UNAVAILABLE — explicit `color-mix(dayDisabledText,
+                // transparent, 50%)` effect via opacity so cells read
+                // as "greyed out" against both light + dark popupBg.
                 color = theme.dayDisabledText;
               }
               const cellStyle: React.CSSProperties = {
