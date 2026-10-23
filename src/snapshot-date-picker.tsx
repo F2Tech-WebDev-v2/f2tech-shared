@@ -82,10 +82,27 @@ export interface SnapshotDatePickerProps {
   disabled?: boolean;
 }
 
-/** YYYY-MM-DD for the user's LOCAL day. */
+/**
+ * YYYY-MM-DD for *today in Eastern Time* (America/New_York).
+ *
+ * Was previously built from `new Date()` + local getters, which gave the
+ * viewer's browser-local day. For market-data pickers that's wrong — a
+ * user west of ET sees "today" a day behind the actual trading day, so
+ * the "Back to today" button, the today outline, and the default
+ * `maxDate` ceiling all offset. Mike IT-F2-391 cid 190dae6b 2026-10-23
+ * ("your 'Today' isn't based on Easter time"). Intl parts land as
+ * YYYY-MM-DD under the `en-CA` locale, which handles the format for us
+ * with zero DST / month-length math.
+ */
 function todayIso(): string {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/New_York',
+    year: 'numeric', month: '2-digit', day: '2-digit',
+  }).formatToParts(new Date());
+  const y = parts.find((p) => p.type === 'year')?.value || '';
+  const mo = parts.find((p) => p.type === 'month')?.value || '';
+  const d = parts.find((p) => p.type === 'day')?.value || '';
+  return `${y}-${mo}-${d}`;
 }
 
 /** MM/DD/YYYY for display in the chip. */
