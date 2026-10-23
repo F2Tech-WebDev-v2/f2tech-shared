@@ -122,6 +122,36 @@ function isoOf(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
+/**
+ * Convert `#rrggbb` / `#rrggbbaa` / `rgb(…)` / `rgba(…)` to an rgba()
+ * string with the given alpha. Non-color inputs (CSS variables,
+ * `transparent`, named colors) fall through as-is so consumers that
+ * theme via `var(--brand-primary)` get the raw var back in the output
+ * and the browser handles painting with its own alpha-less rendering
+ * (slight visual regression on var themes but no crash).
+ */
+function _tintColor(input: string, alpha: number): string {
+  const a = Math.max(0, Math.min(1, alpha));
+  const s = String(input || '').trim();
+  // #rrggbb or #rgb
+  let m = /^#([0-9a-f]{3})$/i.exec(s);
+  if (m) {
+    const [r, g, b] = m[1].split('').map((h) => parseInt(h + h, 16));
+    return `rgba(${r},${g},${b},${a})`;
+  }
+  m = /^#([0-9a-f]{6})$/i.exec(s);
+  if (m) {
+    const r = parseInt(m[1].slice(0, 2), 16);
+    const g = parseInt(m[1].slice(2, 4), 16);
+    const b = parseInt(m[1].slice(4, 6), 16);
+    return `rgba(${r},${g},${b},${a})`;
+  }
+  m = /^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i.exec(s);
+  if (m) return `rgba(${m[1]},${m[2]},${m[3]},${a})`;
+  // CSS var / named color — browser handles its own paint; return as-is.
+  return s;
+}
+
 const MONTH_NAMES = [
   'January', 'February', 'March', 'April', 'May', 'June',
   'July', 'August', 'September', 'October', 'November', 'December',
@@ -363,18 +393,51 @@ export function SnapshotDatePicker(props: SnapshotDatePickerProps) {
               const clickable = isClickable(c.iso);
               const isSelected = c.iso === value;
               const isToday = c.iso === today;
+              // Visual tiers so Mike can tell at a glance which cells are
+              // selectable (recipe §4.5 Invariant 1 — "no mistaking which
+              // cells have data"). Three states, strongly separated:
+              //   SELECTED: solid accent fill + accentText + bold
+              //   TODAY (not selected): accent-tinted fill + 2px accent
+              //                         border + bold so "today" is
+              //                         unambiguous without needing a click
+              //   AVAILABLE: subtle translucent fill via a neutral tint so
+              //              clickable cells pop against unclickable ones
+              //   UNAVAILABLE: deep dim text, not-allowed cursor, no fill
+              let bg: string = 'transparent';
+              let color: string = theme.dayText;
+              let outline: string = 'none';
+              let fontWeight: 400 | 600 | 700 = 400;
+              if (isSelected) {
+                bg = theme.accent;
+                color = theme.accentText;
+                fontWeight = 700;
+              } else if (isToday) {
+                // tint = accent with ~22% alpha so bg is readable but clearly
+                // marked. Falls back silently if accent is a CSS var — the
+                // alpha-channel append works for #rrggbb and rgb(…) literals.
+                bg = _tintColor(theme.accent, 0.22);
+                color = theme.dayText;
+                outline = `2px solid ${theme.accent}`;
+                fontWeight = 700;
+              } else if (clickable) {
+                // Subtle bg so clickable in-month cells stand out from
+                // disabled ones. Uses the muted color at ~18% alpha —
+                // works against popupBg without introducing new theme keys.
+                bg = _tintColor(theme.muted, 0.18);
+                color = theme.dayText;
+                fontWeight = 600;
+              } else {
+                color = theme.dayDisabledText;
+              }
               const cellStyle: React.CSSProperties = {
                 ...dayCellBase,
                 cursor: clickable ? 'pointer' : 'not-allowed',
-                background: isSelected ? theme.accent : 'transparent',
-                color: isSelected
-                  ? theme.accentText
-                  : clickable
-                  ? theme.dayText
-                  : theme.dayDisabledText,
-                opacity: c.inMonth ? 1 : (clickable ? 0.55 : 0.35),
-                outline: isToday && !isSelected ? `1px solid ${theme.accent}` : 'none',
-                fontWeight: isSelected ? 700 : 400,
+                background: bg,
+                color,
+                opacity: c.inMonth ? 1 : (clickable ? 0.5 : 0.3),
+                outline,
+                outlineOffset: outline === 'none' ? undefined : -2,
+                fontWeight,
               };
               return (
                 <button
