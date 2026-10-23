@@ -412,31 +412,33 @@ export function SnapshotDatePicker(props: SnapshotDatePickerProps) {
                 color = theme.accentText;
                 fontWeight = 700;
               } else if (isToday) {
-                // tint = accent with ~35% alpha so bg is unambiguous even
-                // on dark Core4-style surfaces. Mike c/6b12213b 2026-10-23:
-                // "no dates are highlighted as selectable" — bumped from
-                // 0.22 to 0.35 so the "today" fill is clearly readable
-                // alongside the AVAILABLE tier below.
-                bg = _tintColor(theme.accent, 0.35);
-                color = theme.dayText;
+                // TODAY = thin outlined pill so "today" is unambiguous
+                // without competing with SELECTED's solid fill. Mike
+                // c/8ee35ca2 2026-10-23: round-1 bg-tint approach looked
+                // muddy against the Core4 dark surface; TODAY stays clean
+                // via an outline-only treatment, text in the accent color
+                // so the day number itself reads as "right now".
+                color = theme.accent;
                 outline = `2px solid ${theme.accent}`;
                 fontWeight = 700;
               } else if (clickable) {
-                // Mike c/6b12213b 2026-10-23 — the prior 18% muted tint
-                // was invisible against Core4's dark popup bg; bumped
-                // alpha to 0.40 and layered a 1px accent-tint border so
-                // AVAILABLE cells stand out at a glance even on surfaces
-                // where muted ≈ popupBg. Border alpha stays low (0.45)
-                // so SELECTED (solid accent) and TODAY (2px solid border)
-                // remain visually dominant.
-                bg = _tintColor(theme.muted, 0.40);
+                // AVAILABLE = full-brightness day text, no cell fill.
+                // Mike c/8ee35ca2 2026-10-23: "the dark color set looks
+                // bad on the calendar". The round-1 muted-tint fill was
+                // too close to popupBg across themes and read as mud.
+                // Dropped the bg entirely; relies on text brightness
+                // vs the UNAVAILABLE dim text to distinguish clickable
+                // cells (matches Material / iOS calendar conventions
+                // where availability is signaled by text contrast, not
+                // cell fills). Hover ring is handled via browser default
+                // focus + the cursor:pointer below.
                 color = theme.dayText;
-                outline = `1px solid ${_tintColor(theme.accent, 0.45)}`;
                 fontWeight = 600;
               } else {
-                // UNAVAILABLE — explicit `color-mix(dayDisabledText,
-                // transparent, 50%)` effect via opacity so cells read
-                // as "greyed out" against both light + dark popupBg.
+                // UNAVAILABLE — dim dayDisabledText + not-allowed cursor
+                // + the opacity rule below (0.3) layer to give an
+                // unmistakable "no data here" cell against both light
+                // and dark popupBg surfaces.
                 color = theme.dayDisabledText;
               }
               const cellStyle: React.CSSProperties = {
