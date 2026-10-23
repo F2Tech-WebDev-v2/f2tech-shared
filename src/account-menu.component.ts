@@ -100,6 +100,15 @@ export interface AccountMenuItem {
           onmouseout="this.style.background='transparent'"
         >Dashboard</a>
         <a
+          *ngIf="resolvedAlertsUrl"
+          [href]="resolvedAlertsUrl"
+          role="menuitem"
+          (click)="open = false"
+          style="display:block;padding:10px 16px;font-size:14px;color:var(--brand-text-primary, #e5e7eb);text-decoration:none;cursor:pointer"
+          onmouseover="this.style.background='var(--brand-panel-bg-hover, rgba(255,255,255,0.08))'"
+          onmouseout="this.style.background='transparent'"
+        >Alerts</a>
+        <a
           *ngIf="agreementUrl"
           [href]="agreementUrl"
           target="_blank"
@@ -179,11 +188,25 @@ export class AccountMenuComponent {
    * picker without having to sign out first.
    */
   @Input() dashboardUrl: string | null | undefined = undefined;
+  /**
+   * Alerts menu item destination — the Notification Center for the current
+   * scanner. Default null (hidden); consumers compute the URL only when the
+   * user is admin AND the active scanner has NC enabled. Fleet-standard
+   * target is `/scans/<slug>/notification-center` on the current branded
+   * host; f2-members Edge Middleware subpath branch (commit 6d3a4d2)
+   * rewrites that path to the NC SPA. Mike IT-F2-391 cid 429b12c5
+   * 2026-10-23.
+   */
+  @Input() alertsUrl: string | null = null;
   @Output() signOut = new EventEmitter<void>();
   @Output() changePassword = new EventEmitter<void>();
 
   get resolvedDashboardUrl(): string | null {
     return this.dashboardUrl === undefined ? '/?reset_scanner=1' : this.dashboardUrl;
+  }
+
+  get resolvedAlertsUrl(): string | null {
+    return this.alertsUrl || null;
   }
 
   open = false;
