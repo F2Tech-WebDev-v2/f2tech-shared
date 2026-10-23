@@ -50,6 +50,19 @@ export interface AccountMenuProps {
    * scanner back to the picker without having to sign out first.
    */
   dashboardUrl?: string | null;
+  /**
+   * Alerts menu item destination — the Notification Center for the
+   * current scanner. Consumers compute the URL only when the user is
+   * admin AND the active scanner has NC enabled; pass undefined/null
+   * otherwise and the item is hidden. Fleet-standard target is
+   * `/scans/<slug>/notification-center` on the current branded host —
+   * the f2-members Edge Middleware subpath branch (f2-members commit
+   * 6d3a4d2) rewrites that pathname to the NC SPA. Mike IT-F2-391 cid
+   * 429b12c5 2026-10-23: "for admin's under the member chip i want a
+   * button for alerts that takes you to the notification center for
+   * that scanner".
+   */
+  alertsUrl?: string | null;
 }
 
 /**
@@ -74,11 +87,15 @@ function safeEmail(value: string | null | undefined): string | null {
   return s;
 }
 
-export function AccountMenu({ agreementUrl, email: emailIn, firstName, lastName, customItems, onSignOut, onChangePassword, dashboardUrl }: AccountMenuProps) {
+export function AccountMenu({ agreementUrl, email: emailIn, firstName, lastName, customItems, onSignOut, onChangePassword, dashboardUrl, alertsUrl }: AccountMenuProps) {
   const email = safeEmail(emailIn);
   // Default-on, undefined === use fleet-standard destination. Explicit
   // null opts out; any string overrides the destination.
   const resolvedDashboardUrl = dashboardUrl === undefined ? '/?reset_scanner=1' : dashboardUrl;
+  // Alerts is default-off — only shows when the consumer has computed
+  // a non-empty URL (user is admin + scanner has NC). No fleet-standard
+  // default URL because the scanner slug varies per host.
+  const resolvedAlertsUrl = alertsUrl || null;
   const [hover, setHover] = useState(false);
   const [focus, setFocus] = useState(false);
   const [open, setOpen] = useState(false);
@@ -269,6 +286,18 @@ export function AccountMenu({ agreementUrl, email: emailIn, firstName, lastName,
               onMouseOut={(e) => (e.currentTarget.style.background = 'transparent')}
             >
               Dashboard
+            </a>
+          )}
+          {resolvedAlertsUrl && (
+            <a
+              href={resolvedAlertsUrl}
+              role="menuitem"
+              onClick={() => setOpen(false)}
+              style={itemBase}
+              onMouseOver={(e) => (e.currentTarget.style.background = itemHoverBg)}
+              onMouseOut={(e) => (e.currentTarget.style.background = 'transparent')}
+            >
+              Alerts
             </a>
           )}
           {agreementUrl && (
