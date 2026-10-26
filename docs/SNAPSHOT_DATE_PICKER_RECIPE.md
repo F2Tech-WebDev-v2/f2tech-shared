@@ -559,6 +559,138 @@ async onScanDateChange(next: string) {
 
 ---
 
+## 8.5. Pitfalls — what the IT-F2-391 2026-10-23/24 iteration taught us
+
+Lifted here so future agents reading this recipe don't repeat the
+back-and-forth. Each item is a trap the Core4 + NC rollout actually
+tripped on; the fix is one sentence so you can scan.
+
+### 8.5.1 ET-today lives in BOTH halves
+
+Partial fix on one side only still shows wrong "today" for viewers
+west of ET. Both are required:
+
+- **SPA component**: `todayIso()` must use `Intl.DateTimeFormat('en-CA',
+  { timeZone: 'America/New_York', ... })` — NOT `new Date()` + local
+  `getFullYear/Month/Date`. The shared component already does this
+  (f2tech-shared `#16` 2026-10-23); if you're on an older pin, bump it.
+- **Backend `/dates` window**: ceiling AND floor compare against ET-today's
+  midnight-UTC, not `Date.now()`. A UTC ceiling drops the current ET-day
+  for a few hours each evening.
+
+### 8.5.2 Non-dated `db_pattern` + `date_field` needs a distinct-values branch
+
+If a channel's `db_pattern` has no `{yyyy-MM-dd}` placeholder (static
+ledger — e.g. `T3_ledger.Core4_Closed`), the dated-DB enumeration path
+returns `[]` and the picker renders "No dates available".
+
+Backend must have a branch:
+
+```js
+if (phIdx < 0) {
+  if (!dateField) return { dates: [] };
+  // Reverse-map human-readable date_field through __schema__
+  const probeField = reverseMapFromSchema(dateField, schemaDoc) || dateField;
+  const raw = await coll.distinct(probeField, { _id: { $ne: '__schema__' } });
+  // Window-filter + ISO-normalize + return
+}
+```
+
+Reverse-mapping through `__schema__` is non-optional — F2 collections
+store `k1`/`k2`/etc. and the admin UI configures the human-readable name.
+Reference: `f2-admin-service/src/controllers/rest/NotificationCenterController.ts`.
+
+### 8.5.3 Do NOT add a future-date cushion to the window ceiling
+
+A producer may pre-build next-trading-day DBs (e.g. Monday's `T3-YYYY-MM-DD`
+scaffolded Friday evening). It's tempting to add a `+72h` cushion to the
+window ceiling so those appear in the picker — don't. Those DBs carry
+scaffolding or stale state, and users clicking them see data that doesn't
+exist yet.
+
+Keep the ceiling at ET-today, inclusive. If producers truly need to
+expose a future day, add it after that day's close.
+
+### 8.5.4 Visual contrast on CSS-var themes — use text-brightness, not fill-rgba
+
+The shared picker's internal `_tintColor()` helper wraps a color in
+`rgba(..., α)` to produce semi-transparent fills. That doesn't work on
+`var(--accent)` themes (Core4 style) — the var resolves to a solid color
+and the "today" indicator looks identical to "selected", so the user can't
+tell which is which.
+
+For dark-theme consumers, use **text-brightness tiers** (admin-client-app's
+f2tech-shared `49e249f` pattern): SELECTED = solid accent + white bold,
+TODAY = accent text + 2px accent border, no fill, AVAILABLE = full-brightness
+dayText + bold, no fill/border, UNAVAILABLE = dim text + `cursor: not-allowed`.
+
+### 8.5.5 Dead helpers break strict consumers (noUnusedLocals TS6133)
+
+When an iteration removes a code path, remove the helper too. A dormant
+helper in `f2tech-shared/src/snapshot-date-picker.tsx` broke the
+notification-center build (`error TS6133: '_tintColor' is declared but
+its value is never read`). Clean up at ship time, don't leave orphans
+"in case we need them later".
+
+### 8.5.6 Lockfile pin bump — short SHA is a substring hazard
+
+The short SHA on `package.json` AND the long SHA on `package-lock.json`
+both need updating when you bump an `f2tech-shared.git#<sha>` pin. BUT:
+
+```bash
+# WRONG — the short SHA is a substring of the long SHA
+sed -i 's|f2tech-shared.git#1580b49|f2tech-shared.git#de543d0|g' \
+  web/package.json web/package-lock.json
+# Lockfile ends up with:
+#   #de543d073ce1b4613a4d27a17f290469bb73c904  (short replaced inside long — WRONG)
+```
+
+Correct pattern — use `git rev-parse` for the exact full SHA, and do
+the two substitutions separately:
+
+```bash
+NEW_FULL=$(git -C f2tech-shared rev-parse origin/main)
+NEW_SHORT=${NEW_FULL:0:7}
+sed -i "s|f2tech-shared.git#$OLD_SHORT\"|f2tech-shared.git#$NEW_SHORT\"|g" web/package.json
+sed -i "s|f2tech-shared.git#$OLD_FULL|f2tech-shared.git#$NEW_FULL|g" web/package-lock.json
+```
+
+A corrupted lockfile SHA fails Vercel's `npm install` with
+`git ls-remote` → `Permission denied (publickey)` because the long
+hash doesn't exist. Validate by `grep f2tech-shared web/package-lock.json`
+before committing.
+
+### 8.5.7 Multi-mirror repos — PR to the mirror Vercel builds from
+
+Notification Center has two GitHub mirrors: `F2Technology/NotificationCenter`
+and `F2Tech-WebDev-v2/notificationcenter`. Vercel's git integration is
+linked to one of them (lower-case `notificationcenter` for NC). Opening
+a PR to the OTHER mirror merges fine but doesn't trigger a prod build.
+
+Before opening a PR against a scanner SPA:
+
+```bash
+# Which mirror does Vercel actually build from?
+curl -sS -H "Authorization: Bearer $VERCEL_TOKEN" \
+  "https://api.vercel.com/v9/projects/<project-id>?teamId=$TEAM" \
+  | python3 -c 'import json,sys;r=json.load(sys.stdin);l=r["link"];print(l["org"]+"/"+l["repo"]+" branch:"+l.get("productionBranch","main"))'
+```
+
+Push + PR to THAT mirror. For projects with sibling mirrors, cherry-pick
+onto the Vercel-linked mirror if your local checkout is pointed at the
+other one.
+
+### 8.5.8 Cross-lane pin bumps — share, don't ship twice
+
+NC and Core4 both consume `f2tech-shared`. When a shared component ships,
+both SPAs need a pin bump. Agents can coordinate via the ticket: whoever
+owns the component change files one PR per consumer, OR explicitly hands
+off which lane bumps which consumer. Don't let the pin propagation gap
+turn into "Mike's hitting the Core4 picker but it's still on the old
+tier because t3-app hasn't bumped yet".
+
+---
+
 ## 9. Reference implementation
 
 - **Component:** `f2tech-shared/src/snapshot-date-picker.tsx` (420
