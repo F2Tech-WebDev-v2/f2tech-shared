@@ -142,6 +142,31 @@ const ws = new WebSocket(`wss://f2-api.f2-tech.ai/ws/${wsPath}?ticket=${encodeUR
 
 f2-api redeems the ticket against the redis session on handshake. The ticket is single-use + short-TTL so it doesn't matter that it ends up in nginx access logs / Referer.
 
+### `?ticket=` is the only query param f2-api reads for auth — `?token=` is silently rejected
+
+**f2-api's `verifyWsTicket` (`server.js:2183`) reads `req.query.ticket` ONLY.** There is no `?token=<jwt>` fallback and never has been. A SPA that passes the raw JWT in `?token=` will see:
+
+1. Nginx + fastify-websocket completing the TCP + WS upgrade → **HTTP 101 Switching Protocols** (looks like success)
+2. The handler running `verifyWsTicket(req)` → `ticket` is `undefined` → `socket.close(1008, 'No ticket')` fires in the same tick
+3. The browser socket moves to `onclose` with code 1008 before any `send`/`receive` frame can run
+
+**This is the quick-death pattern** — the HAR entry looks successful but the socket is dead within milliseconds of upgrade.
+
+### Diagnostic — HAR triage for a silent 1008 close
+
+If your WS "connects" but no data flows, open a HAR capture (Chrome DevTools → right-click a WS entry → "Save as HAR with content") and check:
+
+| Signal | Meaning |
+|---|---|
+| `_webSocketMessages.length === 0` AND `response.status === 101` | Socket upgraded then died before any frame. **1008 close is the overwhelming default** — ticket missing, invalid, or expired. |
+| Entry total `time` under ~100ms | The handshake itself is ~10–30ms; a 50ms total time means ~20ms handshake + close within another ~20ms. Normal long-lived WS entries show in the thousands of ms (= socket is still open at HAR capture time). |
+| URL query has `?token=…` but no `?ticket=…` | **This is the bug.** SPA was never migrated to the mint-ws-ticket flow. See the mint pattern above. |
+| URL query has `?ticket=…` but still 0 frames | Ticket already redeemed (single-use) or expired. Mint fresh per connect; don't cache tickets across reconnects. |
+
+**Do NOT trust the "101 Switching Protocols" status as evidence that auth succeeded.** The 101 is purely the HTTP upgrade handshake completing before the application handler runs. f2-api closes with 1008 inside the handler's first `await`, which the HAR records as a successful upgrade with zero subsequent frames.
+
+Reference incident: IT-F2-397 c/eafb1762 2026-10-26 — Vol Suite WS was "upgrading" (101) but zero `[WS tt/volsuite/*]` connect-logs appeared on f2-api because the handler bailed at `verifyWsTicket`. Lost ~1 day cycling null-guards + redis fanout before HAR analysis found the SPA was passing `?token=` directly.
+
 ### Subscribe on open — do not skip
 
 f2-api's push pipeline closes any WS that doesn't send a subscribe message within ~a few seconds. The SPA MUST send one on `ws.onopen`:
