@@ -185,12 +185,23 @@ Empty `filter: {}` = "every doc on this channel." For scanners with per-view fil
 
 Floor the first retry at **2s**, not 0 or 500ms. A close-on-no-subscribe fires almost immediately; a tight-loop reconnect at 500ms will burn through the browser's socket pool in a few seconds. 2s → cap 30s.
 
-### 1008 close means the token is dead
+### 1008 close means f2-api rejected the credential presentation
+
+Three distinct causes, same code — read the SPA's own query string before reacting:
+
+1. **URL missing `?ticket=` entirely** (SPA passed `?token=<JWT>` or no auth param at all). Clearing the stored token does NOTHING here — the token is fine; the SPA just isn't minting the ticket. Fix is in SPA code: wire the mint-ws-ticket flow per the "WebSocket ticket mint" section above. Blind retry on the same URL re-1008s instantly. **Historically the most common cause of this close code on scanners newly wired to the fleet WS.** (IT-F2-397 c/eafb1762 2026-10-26 cost ~1 day of null-guard chasing before someone HAR-triaged this.)
+2. **Ticket present but redeemed / expired** (SPA cached a ticket across reconnects, or more than ~30s elapsed between mint and WS open). Mint fresh per connect; never cache. Blind retry WOULD work but only after a fresh mint.
+3. **Underlying JWT is dead** (Cognito token expired, user signed out server-side, etc.). THIS is the case that warrants clearing the stored token + stopping retry — the user needs a fresh sid handoff.
+
+Default handler (treats all three as "stop retry," which is safe but hides the SPA-bug case):
 
 ```js
 ws.onclose = (ev) => {
   ws = null;
   if (ev.code === 1008) {
+    // CHECK YOUR URL FIRST — did the WS have ?ticket=? If no, this is a
+    // SPA bug (mint-ws-ticket not wired), not a dead token. See §
+    // "WebSocket ticket mint" above. If yes, continue below.
     localStorage.removeItem('f2_auth_token');  // Cognito token no longer good
     stopped = true;                             // don't retry this socket
     return;
@@ -199,7 +210,7 @@ ws.onclose = (ev) => {
 };
 ```
 
-Clear the stored token and stop reconnecting that socket. The user needs a fresh sid handoff; retrying with the same dead token will 1008-close again instantly.
+If you reach the `localStorage.removeItem` line and the SPA has already been wiring `?ticket=` correctly, the user genuinely needs a fresh sid handoff — the stored JWT is dead and retrying with it just re-1008s instantly.
 
 ---
 
