@@ -39,6 +39,16 @@ export interface AccountMenuProps {
   onSignOut: () => void;
   onChangePassword: () => void;
   /**
+   * IT-F2-469: Subscriptions item auto-injection. When true (default) the
+   * component fetches GET /rest/api/members/subscriptions on mount and
+   * renders a "Subscriptions" item linking to /members/subscriptions when
+   * the backend returns 200 (customer SOT flag enabled). 404 hides the
+   * item. Pass false on standalone pages where member-portal subscription
+   * management doesn't apply (e.g. admin tools consumed by non-member
+   * accounts).
+   */
+  includeSubscriptions?: boolean;
+  /**
    * Dashboard menu item destination — the branded scanner picker. Defaults
    * to '/?reset_scanner=1', which f2-members Edge Middleware Job 3
    * recognizes as "clear f2_scanner cookie + 302 to clean /" so the
@@ -87,7 +97,7 @@ function safeEmail(value: string | null | undefined): string | null {
   return s;
 }
 
-export function AccountMenu({ agreementUrl, email: emailIn, firstName, lastName, customItems, onSignOut, onChangePassword, dashboardUrl, alertsUrl }: AccountMenuProps) {
+export function AccountMenu({ agreementUrl, email: emailIn, firstName, lastName, customItems, onSignOut, onChangePassword, dashboardUrl, alertsUrl, includeSubscriptions = true }: AccountMenuProps) {
   const email = safeEmail(emailIn);
   // Default-on, undefined === use fleet-standard destination. Explicit
   // null opts out; any string overrides the destination.
@@ -96,6 +106,44 @@ export function AccountMenu({ agreementUrl, email: emailIn, firstName, lastName,
   // a non-empty URL (user is admin + scanner has NC). No fleet-standard
   // default URL because the scanner slug varies per host.
   const resolvedAlertsUrl = alertsUrl || null;
+  // IT-F2-469: Subscriptions item is auto-fetched from f2-admin-service's
+  // GET /rest/api/members/subscriptions on mount. Visible when backend
+  // returns 200 (customer has commerce_subscription_mgmt.enabled: true);
+  // hidden on 404 (feature off for this customer's SOT). Consumers get
+  // this for free with no per-SPA code; opt out by passing
+  // includeSubscriptions={false} for pages where the menu doesn't make
+  // sense (standalone admin tools, login pages, etc.).
+  const [subscriptionsHref, setSubscriptionsHref] = useState<string | null>(null);
+  useEffect(() => {
+    if (!includeSubscriptions) {
+      setSubscriptionsHref(null);
+      return;
+    }
+    let cancelled = false;
+    fetch('/rest/api/members/subscriptions', { credentials: 'include' })
+      .then((r) => {
+        if (cancelled) return;
+        if (r.ok) {
+          // 200 → feature on for this member's customer. The returned
+          // body may be real subs, an empty list, or setup_incomplete —
+          // all three mean "menu item is appropriate".
+          const returnTo = typeof window !== 'undefined'
+            ? encodeURIComponent(window.location.pathname + window.location.search)
+            : '';
+          setSubscriptionsHref(`/members/subscriptions?return_to=${returnTo}`);
+        } else {
+          // 404 → customer SOT gate off; 401 → not authed; other → treat
+          // as unavailable. Don't render the item.
+          setSubscriptionsHref(null);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setSubscriptionsHref(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [includeSubscriptions]);
   const [hover, setHover] = useState(false);
   const [focus, setFocus] = useState(false);
   const [open, setOpen] = useState(false);
@@ -312,6 +360,18 @@ export function AccountMenu({ agreementUrl, email: emailIn, firstName, lastName,
               onMouseOut={(e) => (e.currentTarget.style.background = 'transparent')}
             >
               Exchange Agreements
+            </a>
+          )}
+          {subscriptionsHref && (
+            <a
+              href={subscriptionsHref}
+              role="menuitem"
+              onClick={() => setOpen(false)}
+              style={itemBase}
+              onMouseOver={(e) => (e.currentTarget.style.background = itemHoverBg)}
+              onMouseOut={(e) => (e.currentTarget.style.background = 'transparent')}
+            >
+              Subscriptions
             </a>
           )}
           {(customItems || []).map((item, idx) =>
