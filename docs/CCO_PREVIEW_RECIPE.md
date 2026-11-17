@@ -25,7 +25,9 @@ This was the IT-F2-475 c/7eb654f0 original bug. Fix: route the Preview URL throu
 | 1 | **Scanner SOT field** `Scanner.<id>.PreviewUrl` | `F2-ADMIN.Scanners` (mongo) | String; empty/missing = no preview active. CCO workflow populates. |
 | 2 | **Scoped PATCH endpoint** `PATCH /rest/admin/scanners/:id/preview-url` | `f2-admin-service2` (`scanners.service.ts update_scanner_preview_url`) | Admin-gated write; `{PreviewUrl: null}` → `$unset`. Scoped so CI tokens can only touch this one field. |
 | 3 | **CCO sync-pr-preview-branch workflow** | overlay repo `.github/workflows/sync-pr-preview-branch.yml` | On PR open/push: overlay Tier A → preview branch → PATCH PreviewUrl. On PR close: delete preview branch → PATCH null. |
-| 4 | **f2-members edge middleware** `/scans-preview/:path*` branch | `f2-members/middleware.ts` | Intercepts branded-host `/scans-preview/<slug>` → resolves `preview_url` from `/api/scanners-by-host` cache → `rewrite()` to preview build. Browser stays on branded origin. |
+| 4 | **f2-members edge middleware** `/scans-preview/:path*` branch | `f2-members/middleware.ts` | Intercepts branded-host `/scans-preview/<slug>` → resolves `preview_url` from `/api/scanners-by-host` cache → `rewrite()` to preview build. Also **sets the `f2_preview=1` cookie** so the asset-passthrough branch knows to route follow-up `/main-*.js`/`/styles-*.css` requests to `preview_url` instead of `app_url`. Browser stays on branded origin. |
+| 5 | **f2-members scanner-asset-preview branch** (Phase 1b cookie check) | `f2-members/middleware.ts` | When the `f2_preview=1` cookie is set AND the resolved row has `preview_url`, the asset matcher rewrites `/main-HASH.js` etc. to the **preview origin**, not the prod AppUrl. Response header `x-f2-mw: scanner-asset-preview:<slug>` for diag. Without this, bundle hashes mismatch (prod has `main-ABC.js`, preview has `main-XYZ.js`) and Vercel's SPA fallback serves HTML as the JS module → **white screen** (MIME type blocked). |
+| 6 | **SPA explicit `/scans-preview/:slug` route** | customer repo `src/app/app.routes.ts` | The Angular SPA must have an explicit `scans-preview/:slug` route that renders the same component as `scans/:slug`. Without this, the SPA wildcard `**` catches the unknown path and client-side redirects back to `/scans/<default>` → middleware proxies to AppUrl → **prod SPA served from the preview URL**. No wildcard sub-pattern; mirror the `scans` subtree explicitly. |
 
 Plus the f2-members Preview pill UI itself (`src/pages/Scanners.tsx`) which derives the pill URL from `new URL("/scans-preview/" + id, Scanner.Url)` and navigates in-place (`window.location.assign`, not `window.open`).
 
@@ -174,11 +176,44 @@ curl -X PATCH "https://api.vercel.com/v9/projects/<prj>?teamId=<team>" \
 
 ### 5. Nothing to change on f2-members middleware
 
-The `/scans-preview/:path*` matcher + branch is customer-agnostic (IT-F2-475 f2-members PR #110). It resolves `preview_url` per-request from `/api/scanners-by-host` by branded host, so adding a new customer is zero-code-change on f2-members — as long as the branded host is in the Scanner.Url and already mapped to that customer in `F2-ADMIN.Customers.<slug>.domains[]`.
+The `/scans-preview/:path*` matcher + branch is customer-agnostic (IT-F2-475 f2-members PR #110). It resolves `preview_url` per-request from `/api/scanners-by-host` by branded host, so adding a new customer is zero-code-change on f2-members — as long as the branded host is in the Scanner.Url and already mapped to that customer in `F2-ADMIN.Customers.<slug>.domains[]`. Scanner-asset-preview branch (f2-members PR #111) cookie-gates asset routing so preview bundles load from `preview_url` once the user has entered scans-preview mode; also customer-agnostic.
 
 ### 6. Nothing to change on the Scanner editor
 
 `admin.f2-tech.ai` already shows the `Preview URL` input + inline Preview-link anchor for any scanner (f2-admin PR #295 / #296 / #297). CCO-populated scanners auto-flow into the input value; admins can also edit manually.
+
+### 7. Add explicit `/scans-preview/:slug` route in the SPA (**Tier A**, per-scanner)
+
+The Angular SPA's router must recognize `/scans-preview/:slug` or it will wildcard-redirect to the default route (`/scans/<default>`) on bootstrap — the preview URL briefly flashes in the URL bar, then the SPA client-side-navigates back to a `/scans/*` path, f2-members middleware prefix-matches that against the production `pathname`, and the user sees **prod**. This is **not** a server-side issue — the HTML and assets are served from preview correctly; the SPA's own router does the bounce.
+
+Mirror the `scans` subtree explicitly (per Mike IT-F2-475 2026-11-17: *"please no wild card"*):
+
+```ts
+// src/app/app.routes.ts
+export const routes: Routes = [
+  { path: '', pathMatch: 'full', redirectTo: 'scans/<default-slug>' },
+  {
+    path: 'scans',
+    children: [
+      { path: '<slug>', component: <ScannerComponent>, title: '<Name>', canActivate: [AuthService] },
+      // ... one entry per real scanner slug in this SPA
+    ]
+  },
+  // IT-F2-475: /scans-preview/:slug mirror — explicit, no wildcard
+  {
+    path: 'scans-preview',
+    children: [
+      { path: '<slug>', component: <ScannerComponent>, title: '<Name> (preview)', canActivate: [AuthService] },
+      // ... one entry per real scanner slug, matching the scans subtree
+    ]
+  },
+  { path: '**', redirectTo: 'scans/<default-slug>' }
+];
+```
+
+Reference ship: `F2-HimaReddy/hr-rsi-frontend` PR #3 (merged 2026-11-17, sha `d7eeeaa`). Title suffix `(preview)` is a quick visual distinguisher so testers know they're on the preview build.
+
+**Chicken-and-egg caveat**: the PR that adds this route can't preview itself cleanly (its own preview build won't have the route on top of master until the sync-pr-branch overlay runs with the PR head). First ship this route to customer main via normal push → prod gets it → subsequent customer PRs inherit the route in their preview overlays. Second-order gotcha: if you're bootstrapping preview flow on a NEW CCO scanner, do the route-add as the FIRST customer PR, merge it once prod validates, THEN start iterating on feature PRs.
 
 ---
 
@@ -282,6 +317,15 @@ f2-members middleware for `/scans-preview/:path*` isn't firing. Check `x-f2-mw` 
 ### Symptom: Preview looks bit-identical to prod (no visible diff)
 The customer PR's Tier A overlay produced the same build output as master. Only paths in the overlay list (`src/app/scans`, `src/app/@shared`, `src/app/app.routes.ts`, `src/index.html`, `angular.json`, etc. — scanner-specific) affect the preview; README-only or Tier B edits produce a bit-identical build. Open a PR that changes a visible Tier A string. IT-F2-475 c/80be98ae.
 
+### Symptom: URL bar briefly shows `/scans-preview/<slug>` then flips to `/scans/<default>` → prod SPA
+Angular SPA wildcard router caught the unknown `/scans-preview/<slug>` path and redirected. Missing explicit route per opt-in step 7. IT-F2-475 c/a3e3d569 (HAR page_title confirms the flip). Fix: add the `scans-preview` subtree to `app.routes.ts` per step 7.
+
+### Symptom: URL stable on `/scans-preview/<slug>` but screen is white
+Assets are routing to prod (wrong bundle hashes), Vercel's SPA fallback serves HTML for the missing hashes, browser blocks them as MIME-mismatched modules. Check `x-f2-mw` on a `/main-HASH.js` request from the preview context — should read `scanner-asset-preview:<slug>` (not `scanner-asset:<slug>`). If absent, the `f2_preview=1` cookie isn't being set by the scans-preview branch or the asset branch isn't reading it. Confirm f2-members PR #111 (scanner-asset-preview branch) is deployed; this is a one-time fleet change, not per-customer. IT-F2-475 c/de6028a6.
+
+### Symptom: PREVIEW pill renders on a deprecated `-v2` tile instead of the live scanner
+Legacy per-scanner preview rows (e.g. `hr-rsi-v2`) sometimes linger in the Scanners catalog after the CCO flow retires them. Mike on IT-F2-475 2026-11-17 clicked a `-v2` tile thinking it was "the preview", and because the middleware's `/scans/*` loop prefix-matches `/scans/hr-rsi-v2` against the live scanner's `pathname` (`/scans/hr-rsi`), the request routed to the live scanner's prod AppUrl — looked like a bounce. Delete the deprecated row via `F2-ADMIN.Scanners.deleteOne({_id:'<legacy-id>'})` so the tile disappears from galleries. The `-v2` suffix on CCO-adopted scanners is specifically retired by this preview flow — there's one canonical scanner row per scanner, and the Preview pill on IT lives next to Copy-URL.
+
 ### Symptom: Workflow fails with `Unauthorized` on the PATCH step
 `F2_ADMIN_SERVICE_TOKEN` secret on the overlay repo is missing, expired, or doesn't carry `custom:role:admin`.
 
@@ -316,7 +360,8 @@ You're adding middleware to the wrong project (see the trap section above — br
 - **f2-admin-service2 PR #378** (`preview_url` field on `/api/scanners-by-host`)
 - **f2-admin-service2 PR #369** (`SsoController.redeemSession` mint-bug fix — prereq for session-bearer secret restore)
 - **f2-admin PR #295 / #296 / #297** (Scanner editor PreviewUrl input + preview-link button + hide-when-empty)
-- **f2-members PR #107 / #108 / #109 / #110** (Preview pill render / branded-host URL derive / in-place nav / middleware branch)
+- **f2-members PR #107 / #108 / #109 / #110 / #111** (Preview pill render / branded-host URL derive / in-place nav / `/scans-preview/:path*` middleware branch / `f2_preview=1` cookie + scanner-asset-preview branch)
+- **F2-HimaReddy/hr-rsi-frontend PR #3** (reference: SPA explicit `/scans-preview/:slug` route — no wildcard)
 - **hima-v2 PR #8** (CCO `sync-pr-preview-branch.yml` PATCHes `Scanner.hr-rsi.PreviewUrl`)
 - Memory `feedback_branded_host_middleware_lives_on_f2_members.md` (pre-flight before writing branded-host middleware)
 - Memory `feedback_review_request_direction_still_needs_scope_confirm_clar.md` (scope-confirm clar protocol)
