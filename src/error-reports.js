@@ -53,7 +53,10 @@
  *   validity. Mike 2026-06-27 (ER-HKE8RBM).
  */
 export async function reportError(diagnostics, apiBase, opts) {
-  if (!apiBase || typeof apiBase !== 'string') {
+  // Empty string is a valid same-origin signal — per-SPA env.f2ApiUrl can
+  // be "" when the SPA ships behind a Vercel rewrite that proxies /rest/*
+  // to f2-admin-service2 same-origin. Reject only non-string.
+  if (typeof apiBase !== 'string') {
     return { error: true, status: null, body: null, message: 'reportError: missing apiBase' };
   }
   const base = apiBase.endsWith('/') ? apiBase.slice(0, -1) : apiBase;
