@@ -60,7 +60,12 @@ export async function redeemSid(sid, apiBase) {
   if (!sid || typeof sid !== "string") {
     return { error: true, status: null, body: null, message: "redeemSid: missing or non-string sid" };
   }
-  if (!apiBase || typeof apiBase !== "string") {
+  // Empty string is a valid same-origin signal (per-SPA env.f2ApiUrl can
+  // be "" when the SPA ships behind an f2-members or own-project Vercel
+  // rewrite that proxies /rest/* to f2-admin-service2 with
+  // X-Forwarded-Host preserved — this keeps Set-Cookie Domain scoped to
+  // the branded origin instead of .f2-tech.ai). Reject only non-string.
+  if (typeof apiBase !== "string") {
     return { error: true, status: null, body: null, message: "redeemSid: missing apiBase" };
   }
   const base = apiBase.endsWith("/") ? apiBase.slice(0, -1) : apiBase;
